@@ -44,6 +44,7 @@ var valueFlagNames = map[string]bool{
 	"last":        true,
 	"status":      true,
 	"ip":          true,
+	"country":     true,
 	"grep":        true,
 	"top":         true,
 	"bucket":      true,
@@ -98,6 +99,7 @@ func main() {
 		lastFlag       = flag.String("last", "", "keep entries from the last duration, e.g. 1h30m (overrides --since)")
 		statusFlag     = flag.String("status", "", "comma-separated status filter: exact codes, classes (5xx), ranges (500-599)")
 		ipFlag         = flag.String("ip", "", "comma-separated client IP filter: exact addresses and/or CIDR subnets")
+		countryFlag    = flag.String("country", "", "comma-separated country code filter (e.g. RU,US), matched against $geoip_country_code/$geoip2_data_country_code")
 		grepFlag       = flag.String("grep", "", "regexp that must match the raw log line")
 		jsonFlag       = flag.Bool("json", false, "print the report as JSON instead of text tables")
 		linesFlag      = flag.Bool("lines", false, "print matching raw lines (like grep)")
@@ -153,7 +155,7 @@ Flags:
 		fatalf("%v", err)
 	}
 
-	filters, err := buildFilters(*sinceFlag, *untilFlag, *lastFlag, *statusFlag, *ipFlag, *grepFlag, fields)
+	filters, err := buildFilters(*sinceFlag, *untilFlag, *lastFlag, *statusFlag, *ipFlag, *countryFlag, *grepFlag, fields)
 	if err != nil {
 		fatalf("%v", err)
 	}
@@ -171,7 +173,20 @@ Flags:
 		return
 	}
 
-	runBatch(files, p, filters, stats.NewAggregator(*topFlag, bucket), *linesFlag, *reportFlag, *jsonFlag)
+	trackCountry := specHasVariable(spec, "geoip_country_code") || specHasVariable(spec, "geoip2_data_country_code")
+	runBatch(files, p, filters, stats.NewAggregator(*topFlag, bucket, trackCountry), *linesFlag, *reportFlag, *jsonFlag)
+}
+
+// specHasVariable reports whether the log_format carries the given nginx
+// variable, so optional report sections (e.g. country distribution) only
+// show up when the data actually supports them.
+func specHasVariable(spec *format.Spec, variable string) bool {
+	for _, f := range spec.Fields {
+		if f.Variable == variable {
+			return true
+		}
+	}
+	return false
 }
 
 func parseBucket(spec string) (stats.Bucket, error) {
@@ -199,7 +214,7 @@ func loadFormatSpec(nginxConfPath, formatName string) (*format.Spec, error) {
 	return format.ParseTemplate(formatName, raw, escapeJSON)
 }
 
-func buildFilters(since, until, last, status, ip, grep string, fields fieldFlags) (filter.And, error) {
+func buildFilters(since, until, last, status, ip, country, grep string, fields fieldFlags) (filter.And, error) {
 	var filters filter.And
 
 	var tr filter.TimeRange
@@ -242,6 +257,14 @@ func buildFilters(since, until, last, status, ip, grep string, fields fieldFlags
 
 	if ip != "" {
 		f, err := filter.ParseIP(ip)
+		if err != nil {
+			return nil, err
+		}
+		filters = append(filters, f)
+	}
+
+	if country != "" {
+		f, err := filter.ParseCountry(country)
 		if err != nil {
 			return nil, err
 		}

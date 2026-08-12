@@ -23,6 +23,7 @@ func WriteText(w io.Writer, rep *stats.Report) {
 
 	writeStatusDist(w, rep)
 	writeTopTable(w, "Top client IPs", rep.TopIPs, rep.TotalRequests)
+	writeTopTable(w, "Top countries", rep.TopCountries, rep.TotalRequests)
 	writeTopTable(w, "Top requested paths", rep.TopPaths, rep.TotalRequests)
 	writeTopTable(w, "Top user agents", rep.TopUserAgents, rep.TotalRequests)
 	writeTopTable(w, "Top referers", rep.TopReferers, rep.TotalRequests)

@@ -122,6 +122,25 @@ explicit user instruction, not a suggestion.
   *default* ldflags exactly (see below) so no custom `ldflags:` override
   is needed in `.goreleaser.yaml` — just those four `var`s existing in
   `main.go` is enough.
+- **Country distribution** (`Record.Country()`, `filter.Country`,
+  `Aggregator.trackCountry`): decided via Q&A on 2026-08-12.
+  - Checks both `$geoip_country_code` (legacy `ngx_http_geoip_module`)
+    and `$geoip2_data_country_code` (`ngx_http_geoip2_module`), whichever
+    the log_format has.
+  - Report table is **top-N** (`--top`, like IPs/paths), not a full
+    distribution like `StatusDist` — consistent with the other
+    high-cardinality-ish tables.
+  - Only appears when the log_format actually carries one of those two
+    variables (`specHasVariable` in `main.go`, checked once against
+    `format.Spec.Fields` and passed into `stats.NewAggregator` as
+    `trackCountry`) — otherwise every record would show as `-` and the
+    table would be meaningless noise for formats without geoip at all.
+  - Records with no resolved country (geoip module present in the
+    format but didn't resolve, e.g. local/internal addresses) are
+    grouped under the literal key `-`, shown as a normal row rather than
+    excluded — the user wanted to see that volume, not hide it.
+  - `--country RU,US` added alongside for symmetry with `--ip`/`--status`
+    (exact match on the same two variables, case-insensitive).
 
 ## Docker / CI / releases
 
@@ -138,10 +157,15 @@ explicit user instruction, not a suggestion.
   (`<DOCKERHUB_USERNAME>/gonginxlog`). Triggers: push to `main` (tags
   `latest`/`sha-*`) and version tags `v*.*.*` (tags `X.Y.Z`/`X.Y`), plus
   manual dispatch.
-  **Requires repo setup**: an Actions **variable** `DOCKERHUB_USERNAME`
-  and an Actions **secret** `DOCKERHUB_TOKEN` (a Docker Hub access
-  token). Without them the Docker Hub login step fails; GHCR push still
-  needs nothing extra.
+  Docker Hub publishing is **optional and conditional** on `vars.DOCKERHUB_USERNAME`
+  being set (`if: vars.DOCKERHUB_USERNAME != ''` on its login/metadata
+  steps) — without it those steps are skipped (not failed), and GHCR
+  still publishes. This was a fix made during a pre-publish security
+  review: the first version logged into Docker Hub unconditionally, so
+  a missing token failed the whole job before it ever reached the GHCR
+  push. **To enable Docker Hub too**: add repo Actions **variable**
+  `DOCKERHUB_USERNAME` and Actions **secret** `DOCKERHUB_TOKEN` (a
+  Docker Hub access token).
 - `.github/workflows/release.yml` + `.goreleaser.yaml`: on `v*.*.*` tags,
   GoReleaser cross-builds linux/darwin/windows × amd64/arm64, archives
   (`tar.gz`, `zip` on Windows), writes `checksums.txt`, and publishes a

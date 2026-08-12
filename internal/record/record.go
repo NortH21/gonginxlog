@@ -67,6 +67,17 @@ func (r *Record) RemoteAddr() string {
 	return r.Get("remote_addr")
 }
 
+// Country returns $geoip_country_code (legacy ngx_http_geoip_module) or
+// $geoip2_data_country_code (ngx_http_geoip2_module), whichever is present.
+func (r *Record) Country() string {
+	for _, variable := range []string{"geoip_country_code", "geoip2_data_country_code"} {
+		if v := r.Get(variable); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // Request returns the raw $request line, e.g. `GET /foo?x=1 HTTP/1.1`.
 func (r *Record) Request() string {
 	return r.Get("request")

@@ -95,6 +95,7 @@ gonginxlog --nginx-conf /etc/nginx/nginx.conf --format-name main_json access.log
 | `--last` | keep entries from the last duration (overrides `--since`) | `--last 1h30m` |
 | `--status` | status filter: exact / class / range, comma-combinable | `--status 404,500-599,3xx` |
 | `--ip` | client IP filter: exact / CIDR, comma-combinable | `--ip 203.0.113.5,10.0.0.0/8` |
+| `--country` | country code filter, comma-combinable (see below) | `--country RU,US` |
 | `--grep` | regexp against the whole raw line | `--grep 'wp-admin'` |
 | `--field` | regexp against one named field, repeatable (ANDed) | `--field http_user_agent=bot` `--field host=example\.com` |
 
@@ -105,12 +106,21 @@ same names the report and filters use internally.
 `--since`/`--until` accept RFC3339 or nginx's own `time_local` layout
 (`02/Jan/2006:15:04:05 -0700`).
 
+`--country` matches `$geoip_country_code` (legacy `ngx_http_geoip_module`)
+or `$geoip2_data_country_code` (`ngx_http_geoip2_module`), whichever your
+log_format has. It only works — and the report's "Top countries" table
+only appears — if the log_format carries one of those fields.
+
 ## Output
 
 By default gonginxlog prints an aggregated report:
 
 - status code distribution
-- top client IPs, requested paths, user agents, referers (`--top N` rows each, default 10)
+- top client IPs, countries, requested paths, user agents, referers
+  (`--top N` rows each, default 10; the countries table only shows up
+  when the log_format has `$geoip_country_code` or
+  `$geoip2_data_country_code` — requests with no resolved country are
+  counted under `-`)
 - request time / upstream response time percentiles (avg, p50, p90, p99, max)
 - total bytes sent
 - a requests-over-time histogram (`--bucket`; default `auto` picks a

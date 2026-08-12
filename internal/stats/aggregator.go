@@ -43,16 +43,18 @@ type timedSample struct {
 
 // Aggregator accumulates matched records and produces a Report on demand.
 type Aggregator struct {
-	topN   int
-	bucket Bucket
+	topN         int
+	bucket       Bucket
+	trackCountry bool
 
 	total int
 
-	ipCounts     map[string]int
-	pathCounts   map[string]int
-	uaCounts     map[string]int
-	refCounts    map[string]int
-	statusCounts map[int]int
+	ipCounts      map[string]int
+	pathCounts    map[string]int
+	uaCounts      map[string]int
+	refCounts     map[string]int
+	statusCounts  map[int]int
+	countryCounts map[string]int
 
 	requestTimes  []float64
 	upstreamTimes []float64
@@ -64,16 +66,24 @@ type Aggregator struct {
 
 // NewAggregator creates an Aggregator. topN controls how many rows each top
 // list keeps. bucket controls the requests-over-time histogram granularity.
-func NewAggregator(topN int, bucket Bucket) *Aggregator {
-	return &Aggregator{
+// trackCountry should be true only when the log_format actually carries
+// $geoip_country_code/$geoip2_data_country_code, so the report doesn't show
+// a misleading all-"-" country table for formats that don't have it.
+func NewAggregator(topN int, bucket Bucket, trackCountry bool) *Aggregator {
+	a := &Aggregator{
 		topN:         topN,
 		bucket:       bucket,
+		trackCountry: trackCountry,
 		ipCounts:     map[string]int{},
 		pathCounts:   map[string]int{},
 		uaCounts:     map[string]int{},
 		refCounts:    map[string]int{},
 		statusCounts: map[int]int{},
 	}
+	if trackCountry {
+		a.countryCounts = map[string]int{}
+	}
+	return a
 }
 
 // Add folds one matched record into the running aggregates.
@@ -94,6 +104,13 @@ func (a *Aggregator) Add(r *record.Record) {
 	}
 	if code, ok := r.StatusCode(); ok {
 		a.statusCounts[code]++
+	}
+	if a.trackCountry {
+		country := r.Country()
+		if country == "" {
+			country = "-"
+		}
+		a.countryCounts[country]++
 	}
 	if rt, ok := r.RequestTime(); ok {
 		a.requestTimes = append(a.requestTimes, rt)
@@ -123,7 +140,7 @@ func (a *Aggregator) Add(r *record.Record) {
 
 // Report snapshots the current aggregates into a Report.
 func (a *Aggregator) Report() *Report {
-	return &Report{
+	rep := &Report{
 		TotalRequests:  a.total,
 		From:           a.minTime,
 		To:             a.maxTime,
@@ -137,6 +154,10 @@ func (a *Aggregator) Report() *Report {
 		BytesSentTotal: a.bytesTotal,
 		Histogram:      a.histogram(),
 	}
+	if a.trackCountry {
+		rep.TopCountries = topN(a.countryCounts, a.topN)
+	}
+	return rep
 }
 
 func (a *Aggregator) histogram() []HistogramBucket {

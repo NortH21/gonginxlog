@@ -36,6 +36,10 @@ type Report struct {
 	TopUserAgents []CountEntry
 	TopReferers   []CountEntry
 
+	// TopCountries is nil when the log_format has neither
+	// $geoip_country_code nor $geoip2_data_country_code.
+	TopCountries []CountEntry
+
 	RequestTiming  TimingSummary
 	UpstreamTiming TimingSummary
 
