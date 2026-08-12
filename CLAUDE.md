@@ -76,6 +76,15 @@
 `gopkg.in/yaml.v3`, тот путь не обновлялся с 2022. До `tview` проект
 был чистым stdlib.
 
+Санитайзинг вывода (`internal/term.Sanitize` + `tview.Escape` через
+`safeCellText` в `internal/tui/views.go`): все поля из лога (путь, UA,
+referer, сырая строка) — это данные, которые полностью контролирует
+HTTP-клиент. Перед печатью в терминал/TUI они всегда очищаются от
+управляющих байт и от tview-разметки (`[tag]`) — не флаг, всегда
+включено. Подробности и почему это нельзя было доверить экранированию
+на стороне nginx — см. DESIGN.md, раздел "Terminal / tview injection
+hardening".
+
 **Не начато, только обсуждено (2026-08-12)**: Prometheus-экспортер на
 базе логов — только гео + аномалии из `internal/anomaly` (базовые
 метрики запросов/статусов уже покрывает `nginx-module-vts` у
@@ -95,6 +104,11 @@ go build ./... && go vet ./... && gofmt -l . && go test ./...
 - GoReleaser без публикации: `goreleaser release --snapshot --clean`
 - Реальный тестовый лог лежит в `tests/*.log` — он в `.gitignore` (не
   коммитится, это реальные production-данные пользователя, ~430МБ).
+- CI (`.github/workflows/test.yml`) гоняет тот же набор (`build && vet
+  && gofmt -l . && go test ./... -race`) перед сборкой Docker-образа
+  (`docker.yml`) и релиза (`release.yml`) — оба используют его как
+  reusable workflow через `needs: test`, так что образ/бинарники не
+  соберутся, если тесты красные.
 
 ## О чём легко забыть
 

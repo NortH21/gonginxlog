@@ -79,3 +79,28 @@ func TestWriteTextRendersWithoutPanicOnEmptyReport(t *testing.T) {
 	var buf bytes.Buffer
 	WriteText(&buf, &stats.Report{}, Options{ShowAgents: true, ShowReferers: true})
 }
+
+// TestWriteTextSanitizesControlBytesInFields covers a real attack: a
+// path/User-Agent/referer is attacker-controlled data (nginx logs an
+// HTTP request's fields verbatim), so an ESC byte injected there must
+// never reach the terminal unsanitized - it could otherwise forge or
+// hide output for whoever reads the report.
+func TestWriteTextSanitizesControlBytesInFields(t *testing.T) {
+	rep := &stats.Report{
+		TotalRequests: 1,
+		TopPaths:      []stats.CountEntry{{Key: "/evil\x1b[31mred\x1b[0m", Count: 1}},
+		RouteTiming:   []stats.RouteTimingEntry{{Route: "evil\x1broute", Count: 1, AvgSeconds: 0.1}},
+	}
+	var buf bytes.Buffer
+	WriteText(&buf, rep, Options{})
+	out := buf.String()
+	if strings.ContainsRune(out, 0x1b) {
+		t.Fatalf("expected no raw ESC bytes in the report output, got:\n%q", out)
+	}
+	if !strings.Contains(out, "/evil[31mred[0m") {
+		t.Fatalf("expected the sanitized path (control bytes stripped, rest kept) in the output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "evilroute") {
+		t.Fatalf("expected the sanitized route label in the output, got:\n%s", out)
+	}
+}

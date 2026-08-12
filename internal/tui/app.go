@@ -19,6 +19,7 @@ import (
 	"github.com/north21/gonginxlog/internal/parser"
 	"github.com/north21/gonginxlog/internal/record"
 	"github.com/north21/gonginxlog/internal/stats"
+	"github.com/north21/gonginxlog/internal/term"
 )
 
 // Config configures a TUI session, live or static.
@@ -598,10 +599,16 @@ func (a *App) reseed(newFilter filter.And) {
 	}()
 }
 
+// renderRaw prints each entry's raw log line. e.Raw comes straight from
+// an HTTP request an attacker fully controls (nginx logs it verbatim),
+// so it's run through term.Sanitize (strip control bytes - defends the
+// terminal underneath tview) and tview.Escape (defends tview's own
+// "[tag]" markup, which SetDynamicColors interprets regardless of what
+// the terminal does) before it ever reaches the screen.
 func renderRaw(tv *tview.TextView, entries []Entry) {
 	tv.Clear()
 	for _, e := range entries {
-		fmt.Fprintln(tv, e.Raw)
+		fmt.Fprintln(tv, tview.Escape(term.Sanitize(e.Raw)))
 	}
 	tv.ScrollToEnd()
 }

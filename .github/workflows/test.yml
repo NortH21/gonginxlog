@@ -1,0 +1,50 @@
+name: Test
+
+# Reusable workflow: called by docker.yml and release.yml so both gate
+# their build/publish steps on the same test run instead of duplicating
+# it. Also runnable directly (push/PR) so tests run on every change,
+# not just on the main/tag pushes those two workflows react to.
+on:
+  push:
+    branches: ["main"]
+  pull_request: {}
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: gofmt check
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "gofmt needs to be run on:"
+            echo "$out"
+            exit 1
+          fi
+
+      # -race matters here: internal/tui has caught real production
+      # crashes (data races) that a plain `go test` never surfaced -
+      # see DESIGN.md's crash write-up. No -count=10 in CI to keep this
+      # fast; that heavier form is a local pre-commit habit for
+      # concurrency-touching changes, not a CI requirement.
+      - name: Test
+        run: go test ./... -race

@@ -10,6 +10,7 @@ import (
 	"github.com/north21/gonginxlog/internal/anomaly"
 	"github.com/north21/gonginxlog/internal/record"
 	"github.com/north21/gonginxlog/internal/stats"
+	"github.com/north21/gonginxlog/internal/term"
 )
 
 // matchesDimension checks whether rec belongs to the drill-down key for
@@ -117,8 +118,14 @@ func buildDetailPage(dimension, key string, bufCap int, matched []Entry, trackCo
 	}
 	rep := agg.Report()
 
+	// key can be an attacker-controlled log field (a path or User-Agent
+	// drilled into) - sanitize control bytes and escape tview's own
+	// "[tag]" markup once, up front, so every place key gets displayed
+	// below is safe by construction.
+	safeKey := tview.Escape(term.Sanitize(key))
+
 	header := tview.NewTextView().SetDynamicColors(true)
-	fmt.Fprintf(header, " [white::b]%s[-:-:-] = %s   %d request(s) among the last %d buffered", dimension, key, len(matched), bufCap)
+	fmt.Fprintf(header, " [white::b]%s[-:-:-] = %s   %d request(s) among the last %d buffered", dimension, safeKey, len(matched), bufCap)
 	if allTimeCount >= 0 && len(matched) < allTimeCount {
 		fmt.Fprintf(header, "   [yellow](%d total all-time - the rest are older than the buffer)[-:-:-]", allTimeCount)
 	}
@@ -156,7 +163,7 @@ func buildDetailPage(dimension, key string, bufCap int, matched []Entry, trackCo
 		flex.AddItem(compView.table, 0, 1, false)
 	}
 
-	flex.SetBorder(true).SetTitle(fmt.Sprintf(" detail: %s=%s (Esc to go back) ", dimension, key))
+	flex.SetBorder(true).SetTitle(fmt.Sprintf(" detail: %s=%s (Esc to go back) ", dimension, safeKey))
 	return flex
 }
 

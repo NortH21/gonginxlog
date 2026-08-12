@@ -110,7 +110,7 @@ func writeTopTable(w io.Writer, title string, entries []stats.CountEntry, total 
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	max := entries[0].Count
 	for i, e := range entries {
-		fmt.Fprintf(tw, "  %2d.\t%s\t%d\t%s\t%s\n", i+1, e.Key, e.Count, percentOf(e.Count, total), bar(e.Count, max, 24))
+		fmt.Fprintf(tw, "  %2d.\t%s\t%d\t%s\t%s\n", i+1, term.Sanitize(e.Key), e.Count, percentOf(e.Count, total), bar(e.Count, max, 24))
 	}
 	tw.Flush()
 	fmt.Fprintln(w)
@@ -131,7 +131,7 @@ func writeRouteTiming(w io.Writer, entries []stats.RouteTimingEntry) {
 	fmt.Fprintln(w, "Slowest routes (avg request_time, --routes-file)")
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	for i, e := range entries {
-		fmt.Fprintf(tw, "  %2d.\t%s\tavg=%.3fs\tn=%d\n", i+1, e.Route, e.AvgSeconds, e.Count)
+		fmt.Fprintf(tw, "  %2d.\t%s\tavg=%.3fs\tn=%d\n", i+1, term.Sanitize(e.Route), e.AvgSeconds, e.Count)
 	}
 	tw.Flush()
 	fmt.Fprintln(w)

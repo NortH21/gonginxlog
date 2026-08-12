@@ -396,7 +396,7 @@ func runBatch(files []string, p parser.Parser, filters filter.And, agg *stats.Ag
 			continue
 		}
 		if showLines {
-			fmt.Println(rec.Raw)
+			fmt.Println(term.Sanitize(rec.Raw))
 		}
 		if showReport {
 			agg.Add(rec)
@@ -472,7 +472,7 @@ func runFollow(path string, p parser.Parser, filters filter.And) {
 		if !filters.Match(rec) {
 			return nil
 		}
-		fmt.Println(rec.Raw)
+		fmt.Println(term.Sanitize(rec.Raw))
 		return nil
 	})
 	if err != nil {

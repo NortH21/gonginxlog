@@ -11,6 +11,7 @@ import (
 
 	"github.com/north21/gonginxlog/internal/anomaly"
 	"github.com/north21/gonginxlog/internal/stats"
+	"github.com/north21/gonginxlog/internal/term"
 )
 
 // viewDef is one switchable view: a hotkey, a title, and (for the
@@ -56,6 +57,18 @@ func truncate(s string, max int) string {
 	return string(r[:max-1]) + "…"
 }
 
+// safeCellText prepares a log-field-derived string (a path, User-Agent,
+// referer, IP, route label, alert key/detail...) for display in a
+// table cell. Table cells always interpret "[tag]" style/region markup
+// (unlike TextView, there's no SetDynamicColors toggle to turn it
+// off - see rivo/tview's printWithStyle), so an attacker-controlled
+// value like a crafted User-Agent could otherwise forge colors or
+// break the table layout. term.Sanitize additionally strips raw
+// control bytes (defends the terminal underneath tview itself).
+func safeCellText(s string) string {
+	return tview.Escape(term.Sanitize(s))
+}
+
 func barString(count, max, width int) string {
 	if max <= 0 || count <= 0 {
 		return ""
@@ -95,7 +108,7 @@ func renderCountTable(v *viewDef, entries []stats.CountEntry, total int, keyHead
 	for i, e := range entries {
 		row := i + 1
 		t.SetCell(row, 0, tview.NewTableCell(strconv.Itoa(row)))
-		t.SetCell(row, 1, tview.NewTableCell(truncate(e.Key, maxCellWidth)))
+		t.SetCell(row, 1, tview.NewTableCell(safeCellText(truncate(e.Key, maxCellWidth))))
 		t.SetCell(row, 2, tview.NewTableCell(strconv.Itoa(e.Count)).SetAlign(tview.AlignRight))
 		t.SetCell(row, 3, tview.NewTableCell(percentStr(e.Count, total)).SetAlign(tview.AlignRight))
 		t.SetCell(row, 4, tview.NewTableCell(barString(e.Count, max, 24)).SetTextColor(tcell.ColorGreen))
@@ -162,7 +175,7 @@ func renderRouteTimingTable(v *viewDef, entries []stats.RouteTimingEntry, total 
 	for i, e := range entries {
 		row := i + 1
 		t.SetCell(row, 0, tview.NewTableCell(strconv.Itoa(row)))
-		t.SetCell(row, 1, tview.NewTableCell(truncate(e.Route, maxCellWidth)))
+		t.SetCell(row, 1, tview.NewTableCell(safeCellText(truncate(e.Route, maxCellWidth))))
 		t.SetCell(row, 2, tview.NewTableCell(fmt.Sprintf("%.3fs", e.AvgSeconds)).SetAlign(tview.AlignRight))
 		t.SetCell(row, 3, tview.NewTableCell(strconv.Itoa(e.Count)).SetAlign(tview.AlignRight))
 		t.SetCell(row, 4, tview.NewTableCell(percentStr(e.Count, total)).SetAlign(tview.AlignRight))
@@ -207,8 +220,8 @@ func renderAlertsTable(t *tview.Table, alerts []anomaly.Alert) {
 		color := alertColor(a.Active)
 		t.SetCell(row, 0, tview.NewTableCell(state).SetTextColor(color).SetAttributes(tcell.AttrBold))
 		t.SetCell(row, 1, tview.NewTableCell(string(a.Type)).SetTextColor(color))
-		t.SetCell(row, 2, tview.NewTableCell(a.Key).SetTextColor(color))
-		t.SetCell(row, 3, tview.NewTableCell(a.Detail).SetTextColor(color))
+		t.SetCell(row, 2, tview.NewTableCell(safeCellText(a.Key)).SetTextColor(color))
+		t.SetCell(row, 3, tview.NewTableCell(safeCellText(a.Detail)).SetTextColor(color))
 		t.SetCell(row, 4, tview.NewTableCell(a.FirstSeen.Format("15:04:05")).SetTextColor(color))
 	}
 }

@@ -188,6 +188,20 @@ suggestion.
   `docker/login-action@v4`, `docker/setup-{qemu,buildx}-action@v4`,
   `goreleaser/goreleaser-action@v6`, goreleaser config `version: 2` with
   `formats:` (plural, current) not the deprecated singular `format:`.
+- `.github/workflows/test.yml`: `go build && go vet && gofmt -l . && go
+  test ./... -race` (no `-count=10` in CI - that's a local
+  concurrency-change habit, not worth the extra CI minutes on every
+  push). Declared with `on: workflow_call` so `docker.yml` and
+  `release.yml` both gate their `build-and-push`/`goreleaser` job on it
+  via `needs: test` (a `test:` job with just `uses:
+  ./.github/workflows/test.yml`, no `runs-on` - that's how a reusable
+  workflow is invoked from another workflow in the same repo) instead of
+  duplicating the same steps in three places. It also has its own
+  `push`/`pull_request` triggers so tests run on every change, not only
+  on the main/tag pushes those two workflows react to. Added 2026-08-13
+  after a batch of security-hardening changes (see the sanitization
+  section below) made "tests must pass before a Docker image or a
+  release binary ships" worth enforcing instead of just running locally.
 
 ## Live TUI dashboard (`--ui`)
 
@@ -594,6 +608,81 @@ design choice below picks the safer/simpler option over the more
   advertise a key for a view that isn't there (`5`/`6` when agents/
   referers are off, `8` only when routes are configured) - this
   replaced the previous static `hotkeyBar()` function.
+
+## Terminal / tview injection hardening (2026-08-13)
+
+A security review of the codebase surfaced a real, exploitable class of
+bug: every log field this tool ever displays (`$request` → path,
+`$http_user_agent`, `$http_referer`, and the raw line itself) is data
+the HTTP client fully controls - nginx logs it verbatim, and nothing in
+gonginxlog's own pipeline sanitized it before printing. Two distinct
+consequences, both fixed the same way:
+
+1. **Terminal escape injection.** A crafted User-Agent/path containing
+   raw ESC (`\x1b`) or other C0/C1 control bytes, printed via
+   `fmt.Println`/`fmt.Fprintf` in `--lines`, `-f`, or the batch report's
+   tables, reaches the operator's real terminal unmodified and can
+   forge or hide output, move the cursor, etc.
+2. **tview markup injection.** Separately from terminal escapes, tview
+   itself interprets `[color]`/`[region]` style tags in any text it
+   draws. For `TextView` that's gated by `SetDynamicColors` (which
+   `--ui` sets `true` on every view that needs it), but for
+   `Table`/`TableCell` there is **no such gate at all** - confirmed by
+   reading `rivo/tview@v0.42.0`'s `table.go`/`util.go`: cell text always
+   goes through `printWithStyle` with tag-parsing on, unconditionally.
+   So a User-Agent like `[red]fake[-:-:-]` shown in a top-agents table
+   or an alert's `KEY`/`DETAIL` column would have its markup
+   interpreted, not displayed literally.
+
+Where this reaches attacker data can also be subtler than it looks: for
+`escape=json` log formats, nginx itself escapes control bytes as
+literal `\uXXXX` text in the *file* - but `internal/parser`'s JSON
+parser calls `encoding/json`'s decoder, which un-escapes those back
+into real control-byte runes in memory before anything downstream
+(aggregation, rendering) ever sees the value. So the fix can't rely on
+"nginx already escaped it" even for that format, let alone
+`escape=none`/older nginx/the plain-format regex parser, where
+`Fields`/`Raw` are just substrings of the file bytes with no escaping
+guaranteed at all.
+
+**Fix, not a config knob** - this is always on, no flag disables it,
+since there's no legitimate reason a path/UA/referer needs a raw
+control byte or a literal `[tag]`-shaped substring to display correctly:
+
+- `internal/term.Sanitize(s string) string` strips C0 (`0x00-0x1F`),
+  DEL (`0x7F`), and C1 (`0x80-0x9F`) control runes. Applied at every
+  print site that touches log-derived text: `main.go`'s `--lines`/`-f`
+  output, `internal/output/text.go`'s top-N tables and route-timing
+  section, `internal/tui/app.go`'s raw view (`renderRaw`), and
+  `internal/tui/detail.go`'s drill-down header/title.
+- `internal/tui/views.go`'s new `safeCellText(s string) string` wraps
+  `tview.Escape(term.Sanitize(s))` and is applied to every table cell
+  sourced from log data: `renderCountTable`'s/`renderRouteTimingTable`'s
+  key column, and `renderAlertsTable`'s `KEY`/`DETAIL` columns.
+  `tview.Escape` turns `[tag]` into `[tag[]` (tview's own convention for
+  "render this literally"), so it's applied *in addition to*
+  `Sanitize`, not instead of it - one defends the terminal underneath
+  tview, the other defends tview's own markup layer.
+- Critically, sanitization/escaping only ever touches the *rendered
+  display string* passed to `SetCell`/`Fprintf`, never the underlying
+  `stats.CountEntry`/`Entry`/`anomaly.Alert` values that drill-down
+  matching (`matchesDimension`, `v.entries[idx].Key`) compares against -
+  otherwise an attacker's control bytes in a path would make drill-down
+  silently stop matching that path's own records. `renderCountTable`
+  already stored `v.entries` before building display cells, so this
+  fell out of the existing structure rather than requiring a new split.
+- Tests: `internal/term/term_test.go` covers `Sanitize` directly (C0,
+  DEL, C1 via a U+009B CSI rune, embedded CR/LF, and a no-op case for
+  clean input). `internal/output/text_test.go`'s
+  `TestWriteTextSanitizesControlBytesInFields` and
+  `internal/tui/security_test.go` (new file) cover the print sites:
+  `renderRaw` and `safeCellText` assert no raw ESC byte and no
+  live `[tag]` substring survive; `buildDetailPage`'s test drills with a
+  malicious User-Agent as the key and inspects the actual
+  `tview.Flex.GetTitle()`/header `TextView.GetText(false)` output, not
+  just the sanitizer in isolation, so a future refactor that
+  accidentally drops the `safeKey` substitution at one of the two call
+  sites would fail a test, not just look fine in code review.
 
 ## Deferred (explicitly, not forgotten)
 
