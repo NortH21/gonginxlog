@@ -504,6 +504,81 @@ assume "I'll catch it in review" is enough.
 - Multi-file tailing in `--ui` (currently exactly one file).
 - Interactive TUI browsing of a static, non-live file.
 
+## Idea: log-based Prometheus exporter (discussed 2026-08-12, not started)
+
+Not implemented, no code written - captured here so the discussion
+isn't lost before the user comes back to it. Context: the user already
+runs `nginx-module-vts` for basic per-zone metrics (requests, status
+codes, bytes, latency), so a new exporter here should **not** duplicate
+that. Its value is specifically the things log-derived data can do that
+VTS can't: GeoIP breakdown and the existing `internal/anomaly`
+detectors. Everything below is the shape that discussion converged on,
+not a commitment to build it this way.
+
+**Scope, deliberately narrow to avoid duplicating VTS**:
+- `country` counter from `$geoip_country_code`/`$geoip2_data_country_code`
+  (already have this via `record.Record.Country()`).
+- Anomaly gauges reusing `internal/anomaly.Detector` as-is, e.g.
+  `gonginxlog_active_alerts{type="ip_flood"}` = **count** of currently
+  active alerts of that type, not one series per offending IP/path -
+  keeps cardinality bounded regardless of how many distinct IPs/paths
+  have ever triggered an alert over the exporter's lifetime.
+- Path/route labels only via **user-supplied regex rules** (config file
+  mapping `pattern -> label`, unmatched falls into `other`) - never raw
+  paths as a label. Real paths in this user's logs embed things like
+  numeric game/session IDs (`/gamecenter/game/8611353272737455290`,
+  `/counter?id=...`), so raw-path-as-label would be unbounded
+  cardinality almost immediately.
+- Client IPs only as a **bounded top-N gauge** (e.g. top 20, refreshed
+  each cycle), never a per-IP counter with unbounded history. Flagged
+  as a minor Prometheus anti-pattern (series that appear/disappear
+  between scrapes aren't quite what Prometheus is designed for) but
+  workable - Prometheus marks series stale automatically when a label
+  combination stops being scraped.
+
+**File discovery - the part that addresses "will this hammer the
+disk/CPU"**: the user's real `/var/log/nginx` has 608 files / 60GB, but
+that's dominated by logrotate archives, not live data. The exporter
+should never need to read historical/rotated content at all:
+- Periodic (e.g. every 30s) `filepath.Glob` rescan of a configurable
+  pattern - default should match the user's actual rotation scheme,
+  confirmed live: `<vhost>_access.log` (active) rotates to
+  `<vhost>_access.log.N.gz`. A glob of `*_access.log` matches only the
+  active file for each vhost automatically - `.N.gz` siblings and
+  `<vhost>_error.log` don't match the suffix, no extra filtering logic
+  needed. This should still be a `--exporter-glob` flag, not hardcoded,
+  since other setups may name things differently.
+- Each matched file gets tailed via the same `input.Follow`-style
+  polling used by `-f`/`--ui`, but **no seed-read of existing content**
+  - unlike `--ui` (where a human wants an immediately-populated
+    dashboard), a metrics exporter's counters are meant to be cumulative
+    from process start; Prometheus already handles counter resets on
+    restart. Starting at EOF means zero large reads, ever, in normal
+    operation - only `stat()` polls and incremental reads of newly
+    appended bytes.
+  - Tailing a since-abandoned file (the user has one vhost whose active
+    log hasn't been written to in over a month) costs essentially
+    nothing either - it's just a `stat()` that keeps finding no size
+    change.
+- Needs `internal/input.Follow`-equivalent logic generalized from one
+  file to N (it's currently `-f`/`--ui`-only, single file); the
+  per-file polling logic itself doesn't need to change, just needs N
+  independent instances instead of one.
+- Deployment note, not architecture: the log files are
+  `nginx:root`-owned, `0640` - the exporter process needs to run as
+  `nginx` (or be in the right group, or get an ACL) to read them at
+  all. Worth remembering when this gets built, easy to lose an hour to
+  otherwise.
+- Per-vhost `log_format` could differ; v1 probably assumes one shared
+  format across all matched files rather than per-file overrides,
+  unless that turns out to be wrong in practice.
+
+**Still open** when this comes back: is it a new `--exporter` mode of
+the same `gonginxlog` binary (reusing `internal/parser`/`record`/
+`anomaly` directly, my working assumption) or a separate tool/binary;
+exact number of live vhosts (order of magnitude for how many concurrent
+tailers/goroutines); config file format for the regex route rules.
+
 ## Package layout
 
 ```
