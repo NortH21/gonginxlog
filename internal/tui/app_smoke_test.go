@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,7 +42,8 @@ func TestAppSmoke(t *testing.T) {
 	defer cancel()
 
 	app := NewApp(ctx, Config{
-		Path:         logPath,
+		Paths:        []string{logPath},
+		Live:         true,
 		Parser:       p,
 		TrackCountry: true,
 		BufferSize:   100,
@@ -139,6 +141,87 @@ func TestAppSmoke(t *testing.T) {
 	}
 	if n := syncRead(app, func() int { return app.lastReport.TotalRequests }); n != 21 {
 		t.Fatalf("expected lastReport to catch up to 21 after resuming, got %d", n)
+	}
+
+	screen.InjectKey(tcell.KeyRune, 'q', tcell.ModNone)
+	select {
+	case err := <-runErrCh:
+		if err != nil {
+			t.Fatalf("app.Run returned an error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatalf("app did not quit within the timeout after 'q'")
+	}
+}
+
+// TestAppSmokeStatic verifies static mode (Config.Live == false):
+// multiple files load fine, the header says STATIC, no follow/tick
+// goroutine runs (a line appended after Run() must NOT show up in
+// lastReport - proving nothing is tailing), filter changes still work
+// via reseed, and quitting is still clean.
+func TestAppSmokeStatic(t *testing.T) {
+	pathA := writeTempLog(t)
+	pathB := writeTempLog(t) // a second file: multi-file static must work
+
+	spec := format.Default()
+	p, err := parser.New(spec)
+	if err != nil {
+		t.Fatalf("parser.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	app := NewApp(ctx, Config{
+		Paths:      []string{pathA, pathB},
+		Live:       false,
+		Parser:     p,
+		BufferSize: 100,
+		Refresh:    30 * time.Millisecond, // irrelevant in static mode - tickLoop never starts
+	})
+
+	if app.lastReport == nil || app.lastReport.TotalRequests != 40 {
+		t.Fatalf("expected 40 requests (20 per file x2 files), got %+v", app.lastReport)
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.SetSize(100, 30)
+	app.app.SetScreen(screen)
+
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- app.Run(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+
+	if text := syncRead(app, func() string { return app.header.GetText(true) }); !strings.Contains(text, "STATIC") {
+		t.Fatalf("expected the header to show STATIC, got %q", text)
+	}
+
+	// Nothing should be tailing: appending to pathA must not change
+	// lastReport, even after waiting well past a normal tick interval.
+	appendLine(t, pathA, "200")
+	time.Sleep(150 * time.Millisecond)
+	if n := syncRead(app, func() int { return app.lastReport.TotalRequests }); n != 40 {
+		t.Fatalf("expected lastReport to stay at 40 in static mode (nothing tails), got %d", n)
+	}
+
+	// Filter changes still work via reseed, independent of the tick loop.
+	screen.InjectKey(tcell.KeyRune, '/', tcell.ModNone)
+	time.Sleep(30 * time.Millisecond)
+	for _, r := range "status:404" {
+		screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+	}
+	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	time.Sleep(150 * time.Millisecond)
+	if n := syncRead(app, func() int { return app.lastReport.TotalRequests }); n != 10 {
+		t.Fatalf("expected the status:404 filter to narrow to 10 (5 per file x2), got %d", n)
+	}
+
+	// 'p' (pause) is a live-only concept and must be a no-op here.
+	screen.InjectKey(tcell.KeyRune, 'p', tcell.ModNone)
+	time.Sleep(30 * time.Millisecond)
+	if syncRead(app, func() bool { return app.paused }) {
+		t.Fatalf("expected 'p' to be a no-op in static mode")
 	}
 
 	screen.InjectKey(tcell.KeyRune, 'q', tcell.ModNone)

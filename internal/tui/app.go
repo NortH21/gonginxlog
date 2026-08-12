@@ -6,6 +6,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,16 +21,24 @@ import (
 	"github.com/north21/gonginxlog/internal/stats"
 )
 
-// Config configures a live TUI session.
+// Config configures a TUI session, live or static.
 type Config struct {
-	Version      string // shown in the header, e.g. the release tag - "" is fine, just shows blank
-	Path         string
+	Version      string   // shown in the header, e.g. the release tag - "" is fine, just shows blank
+	Paths        []string // one file when Live; any number, gzip included, when static
+	Live         bool     // false = batch-load Paths once and browse, no tailing/ticking at all
 	Parser       parser.Parser
 	BaseFilters  filter.And // from CLI startup flags; always ANDed with the in-TUI filter
 	TrackCountry bool
+	ShowAgents   bool // include the "agents" view (off by default: usually not interesting)
+	ShowReferers bool // include the "referers" view (off by default)
+	// PathLabel, when set, groups paths into a bounded set of route
+	// labels (see internal/routes) - passed straight to
+	// stats.Aggregator.SetPathLabeler wherever this package builds one.
+	// nil means "use raw paths", and the "routes" view doesn't appear.
+	PathLabel    func(path string) string
 	BufferSize   int                // ring buffer capacity backing the raw view + drill-down
-	Refresh      time.Duration      // stat refresh interval
-	PollInterval time.Duration      // file-tail poll interval
+	Refresh      time.Duration      // stat refresh interval (Live only)
+	PollInterval time.Duration      // file-tail poll interval (Live only)
 	Anomaly      anomaly.Thresholds // trigger thresholds for the alerts view
 }
 
@@ -98,19 +107,23 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	return a
 }
 
-// scanFile does a one-shot batch read of cfg.Path (base filters AND
+// scanFile does a one-shot batch read of cfg.Paths (base filters AND
 // liveFilter applied), producing a fresh Aggregator/RingBuffer/Detector.
-// Used both for the initial seed and whenever the in-TUI filter changes.
-// A large file can take several seconds to scan; ctx is checked
-// periodically (not on every line, to keep the check itself cheap) so
-// Ctrl+C during that wait aborts promptly instead of silently being
-// ignored until the scan finishes on its own.
+// Used for the initial seed, whenever the in-TUI filter changes, and
+// (in static mode) that's the only data source there is. A large file
+// can take several seconds to scan; ctx is checked periodically (not on
+// every line, to keep the check itself cheap) so Ctrl+C during that
+// wait aborts promptly instead of silently being ignored until the scan
+// finishes on its own.
 func (a *App) scanFile(ctx context.Context, liveFilter filter.And) (*stats.Aggregator, *RingBuffer, *anomaly.Detector) {
 	agg := stats.NewAggregator(0, stats.AutoBucket, a.cfg.TrackCountry)
+	if a.cfg.PathLabel != nil {
+		agg.SetPathLabeler(a.cfg.PathLabel)
+	}
 	buf := NewRingBuffer(a.cfg.BufferSize)
 	det := anomaly.NewDetector(a.cfg.Anomaly)
 
-	rc, err := input.Open([]string{a.cfg.Path})
+	rc, err := input.Open(a.cfg.Paths)
 	if err != nil {
 		return agg, buf, det
 	}
@@ -185,13 +198,25 @@ func (a *App) buildViews() []*viewDef {
 		addTable("countries", "countries", '3', "country")
 	}
 	addTable("paths", "paths", '4', "path")
-	addTable("agents", "agents", '5', "user_agent")
-	addTable("referers", "referers", '6', "referer")
+	if a.cfg.ShowAgents {
+		addTable("agents", "agents", '5', "user_agent")
+	}
+	if a.cfg.ShowReferers {
+		addTable("referers", "referers", '6', "referer")
+	}
 
 	timeline := &viewDef{id: "timeline", title: "timeline", key: '7'}
 	timeline.text = tview.NewTextView().SetDynamicColors(true)
 	timeline.primitive = timeline.text
 	views = append(views, timeline)
+
+	if a.cfg.PathLabel != nil {
+		routesView := &viewDef{id: "routes", title: "routes", key: '8', dimension: "route"}
+		routesView.table = newCountTable()
+		routesView.primitive = routesView.table
+		routesView.table.SetSelectedFunc(func(row, col int) { a.onEnter(routesView, row) })
+		views = append(views, routesView)
+	}
 
 	raw := &viewDef{id: "raw", title: "raw", key: 'l'}
 	raw.text = tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
@@ -207,8 +232,11 @@ func (a *App) buildViews() []*viewDef {
 	return views
 }
 
-// Run starts the tailing/tick goroutines and blocks running the TUI
-// event loop until the user quits or ctx is cancelled.
+// Run starts the tailing/tick goroutines (Live only) and blocks running
+// the TUI event loop until the user quits or ctx is cancelled. In
+// static mode (Config.Live == false), neither goroutine starts at all:
+// there's nothing to tail and nothing that changes between ticks, so
+// running them would just be wasted background work.
 func (a *App) Run(ctx context.Context) error {
 	// NewApp's seed scan (before Run is ever called) can take a while on
 	// a large file; if the context was already cancelled during that
@@ -220,8 +248,10 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 
-	go a.followLoop(ctx)
-	go a.tickLoop(ctx)
+	if a.cfg.Live {
+		go a.followLoop(ctx)
+		go a.tickLoop(ctx)
+	}
 	go func() {
 		<-ctx.Done()
 		// Best-effort: if Run() below never got far enough to finish
@@ -238,7 +268,10 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) followLoop(ctx context.Context) {
-	_ = input.Follow(ctx, a.cfg.Path, a.cfg.PollInterval, func(line string) error {
+	if len(a.cfg.Paths) != 1 {
+		return // defensive: Run only starts this when Live, which main.go guarantees means exactly one path
+	}
+	_ = input.Follow(ctx, a.cfg.Paths[0], a.cfg.PollInterval, func(line string) error {
 		a.ingestLive(line)
 		return nil
 	})
@@ -317,6 +350,8 @@ func (a *App) renderActiveView() {
 		renderCountTable(v, rep.TopCountries, rep.TotalRequests, "COUNTRY")
 	case "paths":
 		renderCountTable(v, rep.TopPaths, rep.TotalRequests, "PATH")
+	case "routes":
+		renderRouteTimingTable(v, rep.RouteTiming, rep.TotalRequests)
 	case "agents":
 		renderCountTable(v, rep.TopUserAgents, rep.TotalRequests, "USER AGENT")
 	case "referers":
@@ -347,11 +382,29 @@ func (a *App) refreshHeaderFooter(message string) {
 	a.mu.Lock()
 	paused := a.paused
 	a.mu.Unlock()
-	renderHeader(a.header, a.cfg.Version, a.cfg.Path, rep, activeAlerts, a.startedAt, a.lastRate, paused, false)
+	renderHeader(a.header, a.cfg.Version, strings.Join(a.cfg.Paths, ", "), rep, activeAlerts, a.startedAt, a.lastRate, a.cfg.Live, paused, false)
 
 	v := a.views[a.activeView]
 	renderFooterHint(a.footer, v.title, a.liveFilterText, message)
-	fmt.Fprint(a.footer, "\n"+hotkeyBar())
+	fmt.Fprint(a.footer, "\n"+a.hotkeyBar())
+}
+
+// hotkeyBar lists the actually-registered views' hotkeys (so it never
+// advertises a key for a view that was hidden by --show-agents/
+// --show-referers not being set, or that isn't present in static mode)
+// plus the fixed action keys.
+func (a *App) hotkeyBar() string {
+	var sb strings.Builder
+	sb.WriteString(" ")
+	for _, v := range a.views {
+		fmt.Fprintf(&sb, "[yellow]%s[-:-:-] %s  ", string(v.key), v.title)
+	}
+	sb.WriteString("[yellow]/[-:-:-] filter  [yellow]x[-:-:-] clear  ")
+	if a.cfg.Live {
+		sb.WriteString("[yellow]p[-:-:-] pause  ")
+	}
+	sb.WriteString("[yellow]Enter[-:-:-] detail  [yellow]Esc[-:-:-] back  [yellow]q[-:-:-] quit")
+	return sb.String()
 }
 
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
@@ -377,7 +430,9 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			a.clearFilter()
 			return nil
 		case 'p':
-			a.togglePause()
+			if a.cfg.Live {
+				a.togglePause()
+			}
 			return nil
 		case 'j':
 			return tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone)
@@ -462,11 +517,11 @@ func (a *App) showDetail(dimension, key string, allTimeCount int) {
 
 	var matched []Entry
 	for _, e := range all {
-		if matchesDimension(e.Record, dimension, key) {
+		if matchesDimension(e.Record, dimension, key, a.cfg.PathLabel) {
 			matched = append(matched, e)
 		}
 	}
-	page := buildDetailPage(dimension, key, bufCap, matched, a.cfg.TrackCountry, allTimeCount)
+	page := buildDetailPage(dimension, key, bufCap, matched, a.cfg.TrackCountry, allTimeCount, a.cfg.PathLabel)
 	a.pages.AddAndSwitchToPage("detail", page, true)
 }
 

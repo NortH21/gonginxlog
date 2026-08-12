@@ -56,6 +56,13 @@ type Aggregator struct {
 	statusCounts  map[int]int
 	countryCounts map[string]int
 
+	// pathLabeler, when set via SetPathLabeler, remaps each record's raw
+	// path into a bounded "route" label before it's counted, and turns
+	// on per-route average-timing tracking. nil means "use raw paths",
+	// the original/default behavior.
+	pathLabeler  func(path string) string
+	routeTimings map[string]*routeTimingAccum
+
 	requestTimes  []float64
 	upstreamTimes []float64
 	bytesTotal    int64
@@ -86,6 +93,20 @@ func NewAggregator(topN int, bucket Bucket, trackCountry bool) *Aggregator {
 	return a
 }
 
+// SetPathLabeler installs fn to remap every record's path into a
+// "route" label before it's used as the top-paths key, and enables
+// per-route average-timing tracking (Report().RouteTiming). Memory for
+// route timings is bounded by the number of distinct labels fn
+// returns, not by request volume or raw path cardinality - callers
+// should use a small, fixed label set (see internal/routes), never an
+// unbounded function like "return the raw path unchanged".
+func (a *Aggregator) SetPathLabeler(fn func(path string) string) {
+	a.pathLabeler = fn
+	if a.routeTimings == nil {
+		a.routeTimings = map[string]*routeTimingAccum{}
+	}
+}
+
 // Add folds one matched record into the running aggregates.
 func (a *Aggregator) Add(r *record.Record) {
 	a.total++
@@ -93,9 +114,15 @@ func (a *Aggregator) Add(r *record.Record) {
 	if ip := r.RemoteAddr(); ip != "" {
 		a.ipCounts[ip]++
 	}
-	if p := r.Path(); p != "" {
-		a.pathCounts[p]++
+
+	path := r.Path()
+	if a.pathLabeler != nil {
+		path = a.pathLabeler(path)
 	}
+	if path != "" {
+		a.pathCounts[path]++
+	}
+
 	if ua := r.UserAgent(); ua != "" {
 		a.uaCounts[ua]++
 	}
@@ -112,8 +139,18 @@ func (a *Aggregator) Add(r *record.Record) {
 		}
 		a.countryCounts[country]++
 	}
-	if rt, ok := r.RequestTime(); ok {
+	rt, hasRT := r.RequestTime()
+	if hasRT {
 		a.requestTimes = append(a.requestTimes, rt)
+	}
+	if a.pathLabeler != nil && hasRT && path != "" {
+		acc := a.routeTimings[path]
+		if acc == nil {
+			acc = &routeTimingAccum{}
+			a.routeTimings[path] = acc
+		}
+		acc.sum += rt
+		acc.n++
 	}
 	if ut, ok := r.UpstreamResponseTime(); ok {
 		a.upstreamTimes = append(a.upstreamTimes, ut)
@@ -167,6 +204,9 @@ func (a *Aggregator) Report() *Report {
 	}
 	if a.trackCountry {
 		rep.TopCountries = topN(a.countryCounts, a.topN)
+	}
+	if a.pathLabeler != nil {
+		rep.RouteTiming = routeTimingEntries(a.routeTimings)
 	}
 	return rep
 }

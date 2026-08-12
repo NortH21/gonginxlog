@@ -41,6 +41,21 @@ func percentStr(n, total int) string {
 	return fmt.Sprintf("%.1f%%", 100*float64(n)/float64(total))
 }
 
+// maxCellWidth caps how much of a long value (a path, a User-Agent, a
+// referer URL - real ones observed in production run well past 200
+// chars) gets printed in a table cell. The full value always reaches
+// drill-down regardless, since that reads the stored CountEntry.Key,
+// never the rendered cell text - this is purely a display fix.
+const maxCellWidth = 80
+
+func truncate(s string, max int) string {
+	if len([]rune(s)) <= max {
+		return s
+	}
+	r := []rune(s)
+	return string(r[:max-1]) + "…"
+}
+
 func barString(count, max, width int) string {
 	if max <= 0 || count <= 0 {
 		return ""
@@ -80,7 +95,7 @@ func renderCountTable(v *viewDef, entries []stats.CountEntry, total int, keyHead
 	for i, e := range entries {
 		row := i + 1
 		t.SetCell(row, 0, tview.NewTableCell(strconv.Itoa(row)))
-		t.SetCell(row, 1, tview.NewTableCell(e.Key))
+		t.SetCell(row, 1, tview.NewTableCell(truncate(e.Key, maxCellWidth)))
 		t.SetCell(row, 2, tview.NewTableCell(strconv.Itoa(e.Count)).SetAlign(tview.AlignRight))
 		t.SetCell(row, 3, tview.NewTableCell(percentStr(e.Count, total)).SetAlign(tview.AlignRight))
 		t.SetCell(row, 4, tview.NewTableCell(barString(e.Count, max, 24)).SetTextColor(tcell.ColorGreen))
@@ -123,6 +138,34 @@ func renderStatusTable(v *viewDef, dist map[int]int, total int) {
 		t.SetCell(row, 1, tview.NewTableCell(strconv.Itoa(cnt)).SetAlign(tview.AlignRight))
 		t.SetCell(row, 2, tview.NewTableCell(percentStr(cnt, total)).SetAlign(tview.AlignRight))
 		t.SetCell(row, 3, tview.NewTableCell(barString(cnt, max, 24)).SetTextColor(statusColor(c)))
+	}
+}
+
+// renderRouteTimingTable renders the route-grouped average-latency
+// table (see internal/routes), sorted slowest-first - entries arrive
+// pre-sorted from stats.Aggregator.Report(). Drill-down works the same
+// way as any other CountEntry-backed view (dimension "route").
+func renderRouteTimingTable(v *viewDef, entries []stats.RouteTimingEntry, total int) {
+	countEntries := make([]stats.CountEntry, len(entries))
+	for i, e := range entries {
+		countEntries[i] = stats.CountEntry{Key: e.Route, Count: e.Count}
+	}
+	v.entries = countEntries
+
+	t := v.table
+	t.Clear()
+	t.SetCell(0, 0, headerCell("#"))
+	t.SetCell(0, 1, headerCell("ROUTE"))
+	t.SetCell(0, 2, headerCell("AVG"))
+	t.SetCell(0, 3, headerCell("COUNT"))
+	t.SetCell(0, 4, headerCell("%"))
+	for i, e := range entries {
+		row := i + 1
+		t.SetCell(row, 0, tview.NewTableCell(strconv.Itoa(row)))
+		t.SetCell(row, 1, tview.NewTableCell(truncate(e.Route, maxCellWidth)))
+		t.SetCell(row, 2, tview.NewTableCell(fmt.Sprintf("%.3fs", e.AvgSeconds)).SetAlign(tview.AlignRight))
+		t.SetCell(row, 3, tview.NewTableCell(strconv.Itoa(e.Count)).SetAlign(tview.AlignRight))
+		t.SetCell(row, 4, tview.NewTableCell(percentStr(e.Count, total)).SetAlign(tview.AlignRight))
 	}
 }
 

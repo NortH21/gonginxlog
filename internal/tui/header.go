@@ -16,16 +16,29 @@ func newHeader() *tview.TextView {
 }
 
 // renderHeader must only be called from the main goroutine (inside a
-// key handler) or via app.QueueUpdateDraw (inside the tick loop).
-func renderHeader(tv *tview.TextView, version, path string, rep *stats.Report, activeAlerts int, startedAt time.Time, reqPerSec float64, paused, reloading bool) {
+// key handler) or via app.QueueUpdateDraw (inside the tick loop). In
+// static mode (live == false) req/s and uptime aren't meaningful (there's
+// no tailing/ticking happening at all - see App.Run), so they're omitted
+// rather than shown frozen at 0.
+func renderHeader(tv *tview.TextView, version, path string, rep *stats.Report, activeAlerts int, startedAt time.Time, reqPerSec float64, live, paused, reloading bool) {
 	tv.Clear()
-	uptime := time.Since(startedAt).Truncate(time.Second)
-	state := "[green::b]● LIVE[-:-:-]"
-	if paused {
+
+	var state, extra string
+	switch {
+	case !live:
+		state = "[blue::b]■ STATIC[-:-:-]"
+	case paused:
 		state = "[yellow::b]⏸ PAUSED[-:-:-]"
+	default:
+		state = "[green::b]● LIVE[-:-:-]"
 	}
-	fmt.Fprintf(tv, " [white::b]gonginxlog %s[-:-:-]  %s  %s   req/s: %.0f   total: %d   uptime: %s",
-		version, path, state, reqPerSec, rep.TotalRequests, uptime)
+	if live {
+		uptime := time.Since(startedAt).Truncate(time.Second)
+		extra = fmt.Sprintf("   req/s: %.0f   uptime: %s", reqPerSec, uptime)
+	}
+
+	fmt.Fprintf(tv, " [white::b]gonginxlog %s[-:-:-]  %s  %s   total: %d%s",
+		version, path, state, rep.TotalRequests, extra)
 	if activeAlerts > 0 {
 		fmt.Fprintf(tv, "   [red::b]⚠ %d alert(s)[-:-:-]", activeAlerts)
 	}
@@ -49,10 +62,4 @@ func renderFooterHint(tv *tview.TextView, viewTitle, filterText string, message 
 	if message != "" {
 		fmt.Fprintf(tv, "   [yellow]%s[-:-:-]", message)
 	}
-}
-
-func hotkeyBar() string {
-	return " [yellow]1[-:-:-] status  [yellow]2[-:-:-] ips  [yellow]3[-:-:-] countries  [yellow]4[-:-:-] paths  " +
-		"[yellow]5[-:-:-] agents  [yellow]6[-:-:-] referers  [yellow]7[-:-:-] timeline  [yellow]l[-:-:-] raw  [yellow]a[-:-:-] alerts  " +
-		"[yellow]/[-:-:-] filter  [yellow]x[-:-:-] clear  [yellow]p[-:-:-] pause  [yellow]Enter[-:-:-] detail  [yellow]Esc[-:-:-] back  [yellow]q[-:-:-] quit"
 }

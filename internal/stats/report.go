@@ -24,6 +24,15 @@ type HistogramBucket struct {
 	Bytes int64
 }
 
+// RouteTimingEntry is one row of the route-grouped average-latency
+// table, sorted slowest-first. Only populated when a path labeler was
+// installed via Aggregator.SetPathLabeler.
+type RouteTimingEntry struct {
+	Route      string
+	Count      int
+	AvgSeconds float64
+}
+
 // Report is the fully aggregated view produced by Aggregator.Report.
 type Report struct {
 	TotalRequests int
@@ -46,4 +55,9 @@ type Report struct {
 	BytesSentTotal int64
 
 	Histogram []HistogramBucket
+
+	// RouteTiming is nil unless a path labeler was configured (see
+	// Aggregator.SetPathLabeler) - route grouping is what keeps this
+	// bounded, so there is deliberately no raw-path fallback.
+	RouteTiming []RouteTimingEntry
 }

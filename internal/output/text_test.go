@@ -1,0 +1,81 @@
+package output
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+
+	"github.com/north21/gonginxlog/internal/stats"
+)
+
+func sampleReport() *stats.Report {
+	return &stats.Report{
+		TotalRequests: 10,
+		StatusDist:    map[int]int{200: 8, 500: 2},
+		TopIPs:        []stats.CountEntry{{Key: "203.0.113.5", Count: 10}},
+		TopPaths:      []stats.CountEntry{{Key: "/foo", Count: 10}},
+		TopUserAgents: []stats.CountEntry{{Key: "curl/8.0", Count: 10}},
+		TopReferers:   []stats.CountEntry{{Key: "https://example.com", Count: 10}},
+	}
+}
+
+func TestWriteTextNoColorForNonFileWriter(t *testing.T) {
+	var buf bytes.Buffer
+	WriteText(&buf, sampleReport(), Options{})
+	if strings.Contains(buf.String(), "\033[") {
+		t.Fatalf("expected no ANSI escape codes when writing to a non-*os.File, got:\n%s", buf.String())
+	}
+}
+
+func TestWriteTextAgentsRefererersOffByDefault(t *testing.T) {
+	var buf bytes.Buffer
+	WriteText(&buf, sampleReport(), Options{})
+	out := buf.String()
+	if strings.Contains(out, "Top user agents") {
+		t.Fatalf("expected Top user agents to be hidden by default, got:\n%s", out)
+	}
+	if strings.Contains(out, "Top referers") {
+		t.Fatalf("expected Top referers to be hidden by default, got:\n%s", out)
+	}
+}
+
+func TestWriteTextAgentsReferersShownWhenEnabled(t *testing.T) {
+	var buf bytes.Buffer
+	WriteText(&buf, sampleReport(), Options{ShowAgents: true, ShowReferers: true})
+	out := buf.String()
+	if !strings.Contains(out, "Top user agents") {
+		t.Fatalf("expected Top user agents to appear when ShowAgents is true, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Top referers") {
+		t.Fatalf("expected Top referers to appear when ShowReferers is true, got:\n%s", out)
+	}
+}
+
+func TestWriteTextRouteTimingSection(t *testing.T) {
+	rep := sampleReport()
+	rep.RouteTiming = []stats.RouteTimingEntry{
+		{Route: "game_page", Count: 5, AvgSeconds: 0.234},
+	}
+	var buf bytes.Buffer
+	WriteText(&buf, rep, Options{})
+	out := buf.String()
+	if !strings.Contains(out, "Slowest routes") {
+		t.Fatalf("expected a 'Slowest routes' section when RouteTiming is set, got:\n%s", out)
+	}
+	if !strings.Contains(out, "game_page") {
+		t.Fatalf("expected the route label in the output, got:\n%s", out)
+	}
+}
+
+func TestWriteTextNoRouteTimingSectionWhenNil(t *testing.T) {
+	var buf bytes.Buffer
+	WriteText(&buf, sampleReport(), Options{})
+	if strings.Contains(buf.String(), "Slowest routes") {
+		t.Fatalf("expected no 'Slowest routes' section when RouteTiming is nil")
+	}
+}
+
+func TestWriteTextRendersWithoutPanicOnEmptyReport(t *testing.T) {
+	var buf bytes.Buffer
+	WriteText(&buf, &stats.Report{}, Options{ShowAgents: true, ShowReferers: true})
+}

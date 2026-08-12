@@ -499,10 +499,106 @@ placeholders even when a real one would make an example more concrete.
 This bit us once already after an explicit security review; don't
 assume "I'll catch it in review" is enough.
 
+## Report/UI improvement batch: routes, slow-route timing, colored batch output, static `--ui`, truncation, opt-in agents/referers (2026-08-13)
+
+Follow-up to real `--ui` usage, prioritized via Q&A, with one stated
+overriding constraint: **no meaningful extra load, no crashes**. Every
+design choice below picks the safer/simpler option over the more
+"complete" one for that reason.
+
+- **`internal/routes`**: user-supplied YAML regex-to-label rules,
+  first-match-wins, invalid regex/missing label/empty file fail at
+  `Load()` time (startup), not per-line at runtime. Dependency choice
+  mattered here: `gopkg.in/yaml.v3` (the classic, near-universal import
+  path) hasn't been released since 2022 - the project moved to
+  `go.yaml.in/yaml/v3` (same v3 API, actively maintained, last release
+  2026-07-26), confirmed by checking `proxy.golang.org/.../@latest` for
+  both paths rather than assuming from training data (the org also
+  publishes a `v4`, but it's still an RC - `v3` under the new path was
+  the right pick: current *and* stable).
+- **Route grouping is deliberately not the default, and never applies
+  to raw paths automatically**: `stats.Aggregator.SetPathLabeler(fn
+  func(path string) string)` is additive/opt-in - `Add()` only relabels
+  paths when a labeler was set, so every existing call site is
+  unaffected unless it opts in. `Report().RouteTiming` (new field,
+  `[]RouteTimingEntry{Route, Count, AvgSeconds}`, sorted slowest-first)
+  only gets populated when a labeler is set, mirroring the existing
+  `TopCountries == nil` pattern for "not applicable to this format/
+  config." Memory for `routeTimings` is bounded by the number of
+  distinct labels the function returns (i.e. by the rule count + 1 for
+  "other"), never by raw-path cardinality or request volume - verified
+  directly with `TestPathLabelerBoundsRouteTimingMemory` (10,000
+  distinct raw paths, 3 labels, asserts the map never exceeds 3
+  entries).
+- **Average, not percentiles, for route timing**: `routeTimingAccum{sum
+  float64; n int}` is O(1) memory per route. Exact percentiles would
+  need per-route sample storage; since route cardinality is
+  config-bounded (not traffic-bounded) that's *less* risky than the
+  per-raw-path case would have been, but there was no concrete need for
+  percentile precision here to justify the extra memory against an
+  explicit "don't add load" ask - average already answers "which routes
+  are slow."
+- **`internal/term`** extracted from `logging.go`'s pre-existing
+  `isTerminal`/`useColor`/`colorize` (used for `warn:`/`error:` on
+  stderr) so `internal/output`'s new status-table coloring (same
+  2xx/3xx/4xx/5xx mapping `internal/tui/colors.go` already uses, as ANSI
+  codes instead of `tcell.Color`) doesn't duplicate that logic. `output.
+  WriteText` type-asserts its `io.Writer` to `*os.File` to decide
+  colorability (a `bytes.Buffer` or anything else never gets ANSI
+  codes, regardless of terminal state) - `TestWriteTextNoColorForNonFileWriter`
+  covers this.
+- **Top User-Agent/Referer are opt-in** (`--show-agents`/
+  `--show-referers`, both default `false`) in *both* the batch report
+  and `--ui`'s view list (`buildViews()` wraps those two `addTable`
+  calls the same way it already wrapped `countries` behind
+  `TrackCountry`) - applying it to both surfaces, not just the batch
+  report, keeps "this is opt-in data" consistent rather than
+  inconsistent-by-surface.
+- **Static `--ui`** (`Config.Live bool`, was implicitly always-true
+  before): live only when exactly one plain, non-`.gz` file was given
+  and `--ui-static` wasn't passed; anything else (multiple files, a
+  `.gz`, or the explicit flag) is static. `Run()` doesn't start
+  `followLoop` *or* `tickLoop` at all when static - there's nothing that
+  changes after the initial scan, so there's no periodic work to skip
+  doing, not just periodic work that no-ops. Filter changes still work
+  through the existing `reseed` path regardless (it re-scans
+  `cfg.Paths`, live or not). `--ui -` (stdin) is rejected outright at
+  the CLI layer, live or static: tcell needs the process's own stdin
+  for keyboard input, and a piped `-` almost certainly means the caller
+  intended stdin for log data instead - letting that combination reach
+  tcell would misbehave in a confusing way rather than fail clearly.
+  `p` (pause) is a no-op when static (nothing is ticking to pause).
+  Header shows `■ STATIC` in place of `● LIVE`/`⏸ PAUSED` and omits
+  `req/s`/`uptime` (not meaningful without tailing).
+  `TestAppSmokeStatic` proves the "nothing tails" guarantee concretely,
+  not just by code inspection: it appends a line to one of the seed
+  files *after* `Run()` starts and asserts `lastReport` doesn't move.
+- **Truncation**: `views.go`'s `truncate(s string, max int) string`
+  (plain Go, 80-char default) is applied to the `Key` column in
+  `renderCountTable`/`renderRouteTimingTable`, not via
+  `tview.TableCell.SetMaxWidth` (checked the source - it constrains
+  column screen-width but its godoc doesn't promise an ellipsis, so
+  relying on it for *this specific* UX goal felt like guessing).
+  Drill-down is unaffected by construction: `onEnter` already reads
+  `v.entries[idx].Key` (the untruncated stored value), never rendered
+  cell text.
+- **Route-aware drill-down**: `matchesDimension` and
+  `complementaryBreakdowns` both gained a `pathLabel func(string)
+  string` parameter (nil everywhere except when `--routes-file` is
+  set) so drilling into anything (an IP, a status code, ...) shows a
+  "ROUTE" breakdown column instead of raw "PATH" when routes are
+  configured, for the same consistency reason as everywhere else route
+  grouping applies.
+- **Footer hotkeys are generated from the actually-registered
+  `a.views`**, not a hardcoded string, specifically so they never
+  advertise a key for a view that isn't there (`5`/`6` when agents/
+  referers are off, `8` only when routes are configured) - this
+  replaced the previous static `hotkeyBar()` function.
+
 ## Deferred (explicitly, not forgotten)
 
-- Multi-file tailing in `--ui` (currently exactly one file).
-- Interactive TUI browsing of a static, non-live file.
+- Live tailing of **multiple** files in `--ui` (static multi-file
+  browsing now works; live is still exactly one file).
 
 ## Idea: log-based Prometheus exporter (discussed 2026-08-12, not started)
 
@@ -598,13 +694,19 @@ internal/stats                Aggregator (top-N counters, status dist,
                              timing percentiles, histogram) -> Report
 internal/input                 multi-file/gzip/stdin sources, follow
                              (tail -f) mode
-internal/output                text-table and JSON rendering of Report
+internal/output                text-table (colorized) and JSON rendering
+                             of Report
+internal/term                   shared terminal/ANSI-color helpers used
+                             by both logging.go and internal/output
+internal/routes                 YAML regex-to-label rules for bounded
+                             path grouping (--routes-file)
 internal/anomaly                fixed-threshold sliding-window Detector
                              (ip flood / url scan / distributed hammer)
                              for --ui's alerts view
 internal/tui                    the --ui dashboard: App (tview wiring,
-                             ticker, seed+follow ingest), views.go
-                             (per-view table/text rendering), detail.go
-                             (drill-down), filter_dsl.go (the "/" mini-
-                             language), ringbuffer.go, colors.go
+                             ticker, seed+follow ingest, live/static),
+                             views.go (per-view table/text rendering,
+                             truncation), detail.go (drill-down),
+                             filter_dsl.go (the "/" mini-language),
+                             ringbuffer.go, colors.go
 ```

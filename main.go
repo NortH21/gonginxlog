@@ -22,7 +22,9 @@ import (
 	"github.com/north21/gonginxlog/internal/nginxconf"
 	"github.com/north21/gonginxlog/internal/output"
 	"github.com/north21/gonginxlog/internal/parser"
+	"github.com/north21/gonginxlog/internal/routes"
 	"github.com/north21/gonginxlog/internal/stats"
+	"github.com/north21/gonginxlog/internal/term"
 	"github.com/north21/gonginxlog/internal/tui"
 )
 
@@ -57,6 +59,7 @@ var valueFlagNames = map[string]bool{
 	"anomaly-ip-min":     true,
 	"anomaly-scan-paths": true,
 	"anomaly-hammer-ips": true,
+	"routes-file":        true,
 }
 
 // reorderArgs splits args into flag tokens (kept in their original order,
@@ -115,12 +118,16 @@ func main() {
 		topFlag            = flag.Int("top", 10, "number of rows to show in each top-N table")
 		bucketFlag         = flag.String("bucket", "auto", "time bucket size for the requests-over-time histogram: a duration (e.g. 30m), \"auto\" (pick from the data's time span), or 0 to disable")
 		followFlag         = flag.Bool("f", false, "follow a single log file for new lines (tail -f); prints matching lines only")
-		uiFlag             = flag.Bool("ui", false, "open a live k9s-style TUI dashboard (implies tailing; requires exactly one real file)")
+		uiFlag             = flag.Bool("ui", false, "open a k9s-style TUI dashboard (live-tails one plain file by default; see --ui-static)")
+		uiStaticFlag       = flag.Bool("ui-static", false, "make --ui browse a static snapshot instead of live-tailing (also implied by multiple files, a .gz file, or stdin)")
 		uiBufferFlag       = flag.Int("ui-buffer", 10000, "ring buffer size backing the --ui raw view and drill-down")
 		anomalyIPShareFlag = flag.Float64("anomaly-ip-share", anomaly.DefaultThresholds.FloodShare, "--ui alerts: min share (0-1) of traffic from one IP in the last 60s to flag as a flood")
 		anomalyIPMinFlag   = flag.Int("anomaly-ip-min", anomaly.DefaultThresholds.FloodMinTotal, "--ui alerts: min total requests in that 60s window before the flood share is even checked")
 		anomalyScanFlag    = flag.Int("anomaly-scan-paths", anomaly.DefaultThresholds.ScanPaths, "--ui alerts: min distinct paths one IP must hit in 10s to flag as scanning")
 		anomalyHammerFlag  = flag.Int("anomaly-hammer-ips", anomaly.DefaultThresholds.HammerIPs, "--ui alerts: min distinct IPs hitting one path in 10s to flag as a distributed hammer")
+		routesFileFlag     = flag.String("routes-file", "", "YAML file of regex path->route rules; groups paths into bounded route labels for --top paths and enables the \"slowest routes\" report/view")
+		showAgentsFlag     = flag.Bool("show-agents", false, "include the Top user agents section/view (off by default)")
+		showReferersFlag   = flag.Bool("show-referers", false, "include the Top referers section/view (off by default)")
 		versionFlag        = flag.Bool("version", false, "print the version and exit")
 	)
 	var fields fieldFlags
@@ -155,7 +162,7 @@ Flags:
 
 	files := flag.Args()
 	if len(files) == 0 {
-		fmt.Fprintln(os.Stderr, colorize(ansiRed, "error:")+" no input files given (use '-' to read from stdin)")
+		fmt.Fprintln(os.Stderr, colorize(term.Red, "error:")+" no input files given (use '-' to read from stdin)")
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -181,17 +188,36 @@ Flags:
 
 	trackCountry := specHasVariable(spec, "geoip_country_code") || specHasVariable(spec, "geoip2_data_country_code")
 
-	if *uiFlag {
-		if len(files) != 1 || files[0] == "-" {
-			fatalf("--ui requires exactly one real file path")
+	var routeRules routes.Rules
+	if *routesFileFlag != "" {
+		routeRules, err = routes.Load(*routesFileFlag)
+		if err != nil {
+			fatalf("%v", err)
 		}
+	}
+
+	if *uiFlag {
+		for _, f := range files {
+			if f == "-" {
+				fatalf("--ui can't read from stdin: it needs stdin free for keyboard input")
+			}
+		}
+		live := len(files) == 1 && !*uiStaticFlag && !strings.HasSuffix(files[0], ".gz")
 		anomalyThresholds := anomaly.Thresholds{
 			FloodShare:    *anomalyIPShareFlag,
 			FloodMinTotal: *anomalyIPMinFlag,
 			ScanPaths:     *anomalyScanFlag,
 			HammerIPs:     *anomalyHammerFlag,
 		}
-		runUI(files[0], p, filters, trackCountry, *uiBufferFlag, anomalyThresholds)
+		runUI(files, p, filters, uiOptions{
+			trackCountry: trackCountry,
+			bufferSize:   *uiBufferFlag,
+			anomaly:      anomalyThresholds,
+			live:         live,
+			pathLabel:    routeLabeler(routeRules),
+			showAgents:   *showAgentsFlag,
+			showReferers: *showReferersFlag,
+		})
 		return
 	}
 
@@ -203,7 +229,31 @@ Flags:
 		return
 	}
 
-	runBatch(files, p, filters, stats.NewAggregator(*topFlag, bucket, trackCountry), *linesFlag, *reportFlag, *jsonFlag)
+	agg := stats.NewAggregator(*topFlag, bucket, trackCountry)
+	if labeler := routeLabeler(routeRules); labeler != nil {
+		agg.SetPathLabeler(labeler)
+	}
+	runBatch(files, p, filters, agg, *linesFlag, *reportFlag, *jsonFlag, output.Options{
+		ShowAgents:   *showAgentsFlag,
+		ShowReferers: *showReferersFlag,
+	})
+}
+
+// routeLabeler builds the func(path string) string that
+// stats.Aggregator.SetPathLabeler expects from a loaded routes.Rules,
+// falling back unmatched paths to "other" so route-timing/route-count
+// memory stays bounded by rule count + 1. Returns nil (meaning "use raw
+// paths, don't track route timing") when no rules were configured.
+func routeLabeler(rules routes.Rules) func(path string) string {
+	if rules == nil {
+		return nil
+	}
+	return func(path string) string {
+		if label, ok := rules.Label(path); ok {
+			return label
+		}
+		return "other"
+	}
 }
 
 // specHasVariable reports whether the log_format carries the given nginx
@@ -323,7 +373,7 @@ func buildFilters(since, until, last, status, ip, country, grep string, fields f
 	return filters, nil
 }
 
-func runBatch(files []string, p parser.Parser, filters filter.And, agg *stats.Aggregator, showLines, showReport, jsonOut bool) {
+func runBatch(files []string, p parser.Parser, filters filter.And, agg *stats.Aggregator, showLines, showReport, jsonOut bool, textOpts output.Options) {
 	rc, err := input.Open(files)
 	if err != nil {
 		fatalf("%v", err)
@@ -363,7 +413,7 @@ func runBatch(files []string, p parser.Parser, filters filter.And, agg *stats.Ag
 				fatalf("%v", err)
 			}
 		} else {
-			output.WriteText(os.Stdout, rep)
+			output.WriteText(os.Stdout, rep, textOpts)
 		}
 	}
 
@@ -372,20 +422,36 @@ func runBatch(files []string, p parser.Parser, filters filter.And, agg *stats.Ag
 	}
 }
 
-func runUI(path string, p parser.Parser, filters filter.And, trackCountry bool, bufferSize int, thresholds anomaly.Thresholds) {
+// uiOptions bundles --ui's less-central knobs so runUI's signature
+// doesn't grow a parameter per flag.
+type uiOptions struct {
+	trackCountry bool
+	bufferSize   int
+	anomaly      anomaly.Thresholds
+	live         bool
+	pathLabel    func(path string) string
+	showAgents   bool
+	showReferers bool
+}
+
+func runUI(paths []string, p parser.Parser, filters filter.And, opts uiOptions) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	app := tui.NewApp(ctx, tui.Config{
 		Version:      version,
-		Path:         path,
+		Paths:        paths,
+		Live:         opts.live,
 		Parser:       p,
 		BaseFilters:  filters,
-		TrackCountry: trackCountry,
-		BufferSize:   bufferSize,
+		TrackCountry: opts.trackCountry,
+		BufferSize:   opts.bufferSize,
 		Refresh:      time.Second,
 		PollInterval: 500 * time.Millisecond,
-		Anomaly:      thresholds,
+		Anomaly:      opts.anomaly,
+		PathLabel:    opts.pathLabel,
+		ShowAgents:   opts.showAgents,
+		ShowReferers: opts.showReferers,
 	})
 	if err := app.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		fatalf("%v", err)
