@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"github.com/north21/gonginxlog/internal/output"
 	"github.com/north21/gonginxlog/internal/parser"
 	"github.com/north21/gonginxlog/internal/stats"
+	"github.com/north21/gonginxlog/internal/tui"
 )
 
 // version, commit, date and builtBy are set at build time via -ldflags
@@ -49,6 +51,7 @@ var valueFlagNames = map[string]bool{
 	"top":         true,
 	"bucket":      true,
 	"field":       true,
+	"ui-buffer":   true,
 }
 
 // reorderArgs splits args into flag tokens (kept in their original order,
@@ -107,6 +110,8 @@ func main() {
 		topFlag        = flag.Int("top", 10, "number of rows to show in each top-N table")
 		bucketFlag     = flag.String("bucket", "auto", "time bucket size for the requests-over-time histogram: a duration (e.g. 30m), \"auto\" (pick from the data's time span), or 0 to disable")
 		followFlag     = flag.Bool("f", false, "follow a single log file for new lines (tail -f); prints matching lines only")
+		uiFlag         = flag.Bool("ui", false, "open a live k9s-style TUI dashboard (implies tailing; requires exactly one real file)")
+		uiBufferFlag   = flag.Int("ui-buffer", 10000, "ring buffer size backing the --ui raw view and drill-down")
 		versionFlag    = flag.Bool("version", false, "print the version and exit")
 	)
 	var fields fieldFlags
@@ -165,6 +170,16 @@ Flags:
 		fatalf("invalid --bucket %q: %v", *bucketFlag, err)
 	}
 
+	trackCountry := specHasVariable(spec, "geoip_country_code") || specHasVariable(spec, "geoip2_data_country_code")
+
+	if *uiFlag {
+		if len(files) != 1 || files[0] == "-" {
+			fatalf("--ui requires exactly one real file path")
+		}
+		runUI(files[0], p, filters, trackCountry, *uiBufferFlag)
+		return
+	}
+
 	if *followFlag {
 		if len(files) != 1 || files[0] == "-" {
 			fatalf("-f/--follow requires exactly one real file path")
@@ -173,7 +188,6 @@ Flags:
 		return
 	}
 
-	trackCountry := specHasVariable(spec, "geoip_country_code") || specHasVariable(spec, "geoip2_data_country_code")
 	runBatch(files, p, filters, stats.NewAggregator(*topFlag, bucket, trackCountry), *linesFlag, *reportFlag, *jsonFlag)
 }
 
@@ -340,6 +354,24 @@ func runBatch(files []string, p parser.Parser, filters filter.And, agg *stats.Ag
 
 	if parseErrors > 0 {
 		warnf("%d line(s) did not match the configured log_format and were skipped", parseErrors)
+	}
+}
+
+func runUI(path string, p parser.Parser, filters filter.And, trackCountry bool, bufferSize int) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	app := tui.NewApp(ctx, tui.Config{
+		Path:         path,
+		Parser:       p,
+		BaseFilters:  filters,
+		TrackCountry: trackCountry,
+		BufferSize:   bufferSize,
+		Refresh:      time.Second,
+		PollInterval: 500 * time.Millisecond,
+	})
+	if err := app.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		fatalf("%v", err)
 	}
 }
 

@@ -11,7 +11,8 @@ ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
 
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \

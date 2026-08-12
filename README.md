@@ -3,8 +3,9 @@
 A CLI tool that parses nginx access logs the way they're actually
 configured — by reading the real `log_format` directive (from an
 `nginx.conf`, or a built-in default) instead of assuming a fixed layout.
-Filter by time, status, client IP, or arbitrary regex, and get a
-goaccess-style aggregated report.
+Filter by time, status, client IP, country, or arbitrary regex, get a
+goaccess-style aggregated report, or open a live k9s-style TUI dashboard
+(`--ui`) with anomaly alerts.
 
 ## Build
 
@@ -26,8 +27,11 @@ go build -o gonginxlog .
 # read the log_format from a real nginx.conf (include directives are followed)
 ./gonginxlog --nginx-conf /etc/nginx/nginx.conf --format-name main_json access.log
 
-# tail a live file
+# tail a live file (raw lines only)
 ./gonginxlog -f /var/log/nginx/access.log
+
+# live k9s-style dashboard
+./gonginxlog --ui /var/log/nginx/access.log
 ```
 
 Flags can be given before or after the file paths — `gonginxlog
@@ -50,8 +54,9 @@ gonginxlog -f access.log                                # follow mode (tail -f)
 
 `-f`/`--follow` takes exactly one real file path (not `-`, not multiple
 files) and streams newly appended matching lines. It reopens the file if
-it shrinks (log rotation via `copytruncate` or rename+recreate). Aggregated
-stats are not recomputed live in this mode — see [Roadmap](#roadmap).
+it shrinks (log rotation via `copytruncate` or rename+recreate). It
+doesn't compute any stats — for that, live or not, use `--ui` (see
+[Live TUI](#live-tui-dashboard---ui) below) or the batch report.
 
 ## Choosing the log_format
 
@@ -137,10 +142,49 @@ gonginxlog --lines --report=false access.log  # matching raw lines only, like gr
 gonginxlog --json access.log                # report as JSON instead of text tables
 ```
 
+## Live TUI dashboard (`--ui`)
+
+```sh
+gonginxlog --ui /var/log/nginx/access.log
+gonginxlog --status 5xx --ui --ui-buffer 20000 /var/log/nginx/access.log  # startup filters still apply
+```
+
+A k9s-styled dashboard: one full-screen table at a time, switched with a
+hotkey, refreshed once a second. Requires exactly one real file (same
+restriction as `-f`). On launch it batch-reads the file's existing
+content first so it isn't empty, then keeps tailing live.
+
+Hotkeys: `1` status · `2` ips · `3` countries (only if the log_format
+has geoip) · `4` paths · `5` agents · `6` referers · `7` timeline ·
+`l` raw (live matching lines) · `a` alerts · `/` filter · `x` clear
+filter · `Enter` drill down into the selected row · `Esc` back/close ·
+`q` quit · `j`/`k` also work as up/down.
+
+**In-view filter (`/`)** uses the same mini-language everywhere,
+space-separated tokens ANDed together: `status:5xx`, `ip:203.0.113.5`,
+`country:RU,US`, `grep:<regexp>` (whole line), or `<field>=<regexp>`
+(one field, like `--field`). It's layered on top of whatever `--status`/
+`--ip`/etc. were passed at startup. Applying or clearing (`x`) it
+re-scans the file, so it can take a moment on a very large log.
+
+**Drill down (`Enter`)** on any row shows that IP/path/country/status/
+agent/referer's status-code breakdown and its top related paths or IPs,
+computed from the last `--ui-buffer` requests (default 10000) — not the
+whole file's history, which is why very old activity can drop out of a
+drill-down on a long-running session even though it's still counted in
+the totals.
+
+**Alerts (`a`)** shows anomalies from three fixed-threshold detectors:
+one IP generating ≥30% of traffic in the last 60s, one IP touching ≥20
+distinct paths in the last 10s (scanning), and one path getting hit from
+≥15 distinct IPs in the last 10s (distributed hammering). The header
+shows a `⚠ N alert(s)` badge while any are active.
+
 ## Docker
 
-A small (~4MB) static image is published on every push to `main` and on
-every version tag, to both registries:
+A small (~6MB) static image is published on every push to `main` and on
+every version tag, to both registries. `--ui` needs a real terminal
+(`docker run -it`):
 
 ```sh
 docker pull ghcr.io/north21/gonginxlog:latest
@@ -166,11 +210,10 @@ Go toolchain or Docker needed.
 
 ## Roadmap
 
-Not implemented yet, planned once there's an interactive (TUI) mode:
+Not implemented yet:
 
-- Anomaly detection: a single IP generating an outsized share of
-  requests, many distinct IPs hammering one endpoint, or one IP
-  enumerating many distinct URLs (scanning).
-- Live-updating stats while following a file with `-f`.
+- Multi-file tailing in `--ui` (currently exactly one file, like `-f`).
+- Configurable anomaly thresholds (currently fixed, see above).
+- Interactive TUI browsing of a static (non-live) file.
 
 See `DESIGN.md` for the fuller design rationale and package layout.

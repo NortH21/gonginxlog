@@ -37,8 +37,9 @@ log_format main_json escape=json '{'
 
 ## Decisions made (via Q&A on 2026-08-12)
 
-- **MVP scope**: CLI filters + aggregated text report. No TUI yet —
-  planned as a later phase (see "Deferred").
+- **MVP scope** (original, 2026-08-12): CLI filters + aggregated text
+  report. A live k9s-styled TUI (`--ui`) was added the same day, in a
+  separate round of Q&A — see "Live TUI dashboard" below.
 - **log_format source**: `--nginx-conf <path> --format-name <name>`.
   If not given, falls back to the built-in `main_json` default above.
   `include` directives in the conf are followed recursively (globs
@@ -150,7 +151,10 @@ explicit user instruction, not a suggestion.
   multi-arch builds) → `FROM scratch` final stage with just the static
   binary. No CA certs/tzdata needed: gonginxlog makes no network calls
   and doesn't consult the IANA tz database (offsets come straight from
-  the log's own timestamps). ~4MB final image.
+  the log's own timestamps). ~5.6MB final image (grew from ~4MB once
+  `tview`/`tcell` became a real dependency for `--ui`; still tiny).
+  `go.sum` now exists and is `COPY`'d alongside `go.mod` before `go mod
+  download`, since there's finally something in it to verify.
 - `.github/workflows/docker.yml`: builds `linux/amd64,linux/arm64` and
   pushes to **both** `ghcr.io/<owner>/<repo>` (auth via the automatic
   `GITHUB_TOKEN`, needs `packages: write` permission) and Docker Hub
@@ -180,21 +184,111 @@ explicit user instruction, not a suggestion.
   `goreleaser/goreleaser-action@v6`, goreleaser config `version: 2` with
   `formats:` (plural, current) not the deprecated singular `format:`.
 
+## Live TUI dashboard (`--ui`)
+
+Decided via three rounds of Q&A on 2026-08-12 (the user explicitly
+wanted to be "grilled" on the details before this got built): k9s-styled
+— one full-screen table with a view switcher, not a multi-panel
+dashboard — targeting live mode from day one, not a static-file browser.
+
+- **Library**: `github.com/rivo/tview` (what k9s itself is built on).
+  This is the project's **first external dependency** — everything
+  before this was pure stdlib. Pulls in `github.com/gdamore/tcell/v2`.
+  Final scratch image grew from ~4MB to ~5.6MB; still tiny.
+- **Seeding**: `--ui` batch-reads the file's existing content first
+  (reusing the same scan/filter/Add loop as the CLI's batch mode, via
+  `App.scanFile`), *then* starts tailing new lines. Plain `input.Follow`
+  starts at EOF (correct for `-f`), which would otherwise leave the
+  dashboard empty until new traffic arrives. No double-counting: `Follow`
+  re-stats the file fresh when it starts, so anything appended in the
+  gap between the seed scan and the tail starting gets picked up by the
+  tail, not skipped.
+- **Refresh**: 1x/second (`Config.Refresh`), driven by a ticker goroutine
+  that calls `app.QueueUpdateDraw` — tview's documented pattern for
+  updating widgets from a background goroutine. Key-handler callbacks
+  (`SetInputCapture`/`SetSelectedFunc`) run on tview's own main/event
+  goroutine per its concurrency docs, so they mutate widgets directly
+  without `QueueUpdateDraw` (using it there would deadlock).
+- **Views** (`internal/tui/views.go`): status, ips, countries (only
+  registered if `TrackCountry`), paths, agents, referers, timeline, raw,
+  alerts — one hotkey each, fixed regardless of which views exist (so
+  `paths` is always `4`, whether or not `countries` is present). Every
+  count-table view is rendered from the *uncapped* `stats.Report`
+  (`Aggregator` constructed with `topN=0`, which `topN()` already treats
+  as "no cutoff") since the tables are scrollable — `--top` stays a
+  batch-CLI-only concept.
+- **In-view filter (`/`)**: reuses the `filter` package's own
+  constructors instead of inventing a grammar (`internal/tui/filter_dsl.go`,
+  `ParseFilterExpr`) — `status:`/`ip:`/`country:`/`grep:` prefixes or
+  bare `field=regexp`. Applying or clearing (`x`) it **resets and
+  re-seeds** (re-scans the file with the new filter ANDed onto the
+  startup `--status`/`--ip`/etc. filters) rather than trying to
+  retroactively refilter already-aggregated totals in place — simplest
+  correct behavior, matches "restart tail -f with a new pattern". Runs
+  on a goroutine so a slow re-scan doesn't freeze the UI.
+- **Drill-down (`Enter`)**: generic across every table
+  (`internal/tui/detail.go`, `matchesDimension`/`buildDetailPage`) —
+  filters the ring buffer to the selected key, runs a throwaway
+  `stats.Aggregator` over just that subset, shows its status breakdown
+  plus the complementary dimension's top list (IP → its paths, path →
+  its IPs, etc). Scoped to the ring buffer's contents, not all-time —
+  labeled as such in the page title so it's not mistaken for full
+  history on a long-running session.
+- **Ring buffer** (`internal/tui/ringbuffer.go`): fixed-capacity circular
+  buffer of `(*record.Record, raw string)`, `--ui-buffer` (default
+  10000). Backs the `raw` view and drill-down only — the running totals
+  in every other view come from the live `Aggregator`, which never
+  forgets.
+- **Anomaly detection** (`internal/anomaly`), all three original roadmap
+  items shipped, fixed thresholds (no flags yet): IP flood (≥30% share
+  over 60s, once ≥20 samples), URL scan (≥20 distinct paths/IP over
+  10s), distributed hammer (≥15 distinct IPs/path over 10s). Implemented
+  as tiny per-second sliding-window bucket maps, evicted each `Tick`.
+  **The one subtle bit**: `Observe` buckets by each record's *own*
+  timestamp, but `Tick` evicts by *wall-clock* `time.Now()`. If both used
+  record time, the seed phase (batch-reading potentially hours of
+  history in milliseconds) would look like it all happened in the same
+  instant and trip every threshold instantly. Keying by record time but
+  evicting by wall-clock time means old seeded data ages out of the
+  windows before a real `Tick` ever runs — only genuinely live activity
+  (whose record timestamp ≈ wall-clock now) can alert. Covered by
+  `TestSeedHistoryDoesNotFalselyTrigger`.
+- **A real concurrency bug found and fixed during manual testing**: the
+  goroutine that calls `app.Stop()` on context cancellation raced with
+  `Run()` when the *seed scan itself* (which can take several seconds on
+  a large file, and doesn't take a ctx at all originally) was still
+  running when Ctrl+C arrived — ctx was already cancelled before `Run()`
+  was ever called, so `Stop()` fired on a screen that was never
+  initialized, panicking inside tcell's `Fini()` (`close of nil
+  channel`). Fixed two ways: `scanFile` now takes a `ctx` and checks it
+  every 4096 lines (so Ctrl+C during a slow seed aborts promptly instead
+  of being silently ignored until the scan finishes), and `Run()`
+  returns early if `ctx.Err() != nil` before starting anything, plus a
+  `recover()` around the `Stop()` call as a last-resort safety net. Also
+  found because this sandbox has no controlling terminal at all
+  (`tview.Application.Run()` fails with `open /dev/tty: device not
+  configured`) — a real terminal wouldn't hit that particular error, but
+  the Ctrl+C-during-seed race is real regardless of environment.
+- **Testing without a real TTY**: `internal/anomaly` and the pure parts
+  of `internal/tui` (ring buffer, filter DSL) have plain unit tests.
+  `internal/tui/app_smoke_test.go` drives the actual `App` headlessly via
+  `tcell.NewSimulationScreen` + `Application.SetScreen` (call it *before*
+  `Run()`; tview only creates a real screen if none was already set) —
+  injects key events (`2`, `/status:404`+Enter, `x`, `Enter` for
+  drill-down, `Esc`, `q`) and asserts view/state transitions. This is how
+  the interaction logic was verified in an environment where I
+  (Claude) can't watch a terminal render colors myself — the user still
+  needs to eyeball the actual look/feel in their own terminal.
+- `--ui` requires exactly one real file (same restriction as `-f`) and
+  is mutually exclusive in practice with `--lines`/`--json`/`--report`
+  (those flags are simply ignored when `--ui` is set; `main.go` checks
+  `--ui` first and returns before reaching that logic).
+
 ## Deferred (explicitly, not forgotten)
 
-Anomaly detection, to be added once there's a TUI/GUI:
-- One IP generating an unusually large share of requests (flood/abuse
-  from a single address).
-- Many distinct addresses hitting a single endpoint in a short window
-  (distributed hammering / credential stuffing on one route).
-- One address enumerating many distinct URLs in a short window
-  (path/endpoint scanning, e.g. looking for admin panels).
-
-The stats aggregation code should stay easy to extend with this later
-(e.g. per-IP path-diversity counters, per-path IP-diversity counters,
-sliding time windows) without a redesign — but no anomaly-detection
-code is stubbed in yet, since the shape of the future TUI will drive
-how it's surfaced.
+- Multi-file tailing in `--ui` (currently exactly one file).
+- Configurable anomaly thresholds (currently the fixed values above).
+- Interactive TUI browsing of a static, non-live file.
 
 ## Package layout
 
@@ -216,4 +310,12 @@ internal/stats                Aggregator (top-N counters, status dist,
 internal/input                 multi-file/gzip/stdin sources, follow
                              (tail -f) mode
 internal/output                text-table and JSON rendering of Report
+internal/anomaly                fixed-threshold sliding-window Detector
+                             (ip flood / url scan / distributed hammer)
+                             for --ui's alerts view
+internal/tui                    the --ui dashboard: App (tview wiring,
+                             ticker, seed+follow ingest), views.go
+                             (per-view table/text rendering), detail.go
+                             (drill-down), filter_dsl.go (the "/" mini-
+                             language), ringbuffer.go, colors.go
 ```
