@@ -50,10 +50,19 @@ type Thresholds struct {
 	HammerIPs int
 }
 
-// DefaultThresholds are gonginxlog's original built-in values.
+// DefaultThresholds. Recalibrated 2026-08-12 after two real sites both
+// false-positived on ip_flood with the original 0.30/20: a single
+// legitimate visitor on a quiet site trivially clears a 20-request
+// floor and a 30% share (that *is* 100% of a quiet site's traffic), and
+// a single heavy-but-legitimate client (game backend heartbeat/health
+// checks) on a busy site can easily sit around a 35% share without
+// being an attack. Raised both FloodMinTotal and FloodShare high enough
+// that neither observed false positive would have fired; ScanPaths and
+// HammerIPs are unchanged since no false positives were reported for
+// those two. See DESIGN.md for the actual numbers behind this call.
 var DefaultThresholds = Thresholds{
-	FloodShare:    0.30,
-	FloodMinTotal: 20,
+	FloodShare:    0.60,
+	FloodMinTotal: 100,
 	ScanPaths:     20,
 	HammerIPs:     15,
 }

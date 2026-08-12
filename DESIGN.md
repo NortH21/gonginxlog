@@ -425,6 +425,43 @@ pause/resume case: append a line while paused and assert
 `lastReport.TotalRequests` doesn't move, then resume and assert it
 catches up - passes under `-race`.
 
+### `DefaultThresholds` recalibrated from two real false positives (2026-08-12, same day)
+
+Both real sites tested against `--ui` false-positived on `ip_flood`
+with the original defaults (`FloodShare: 0.30, FloodMinTotal: 20`),
+for opposite reasons:
+
+- **A very quiet real site** (77 total requests over ~7 minutes):
+  a single real visitor's normal session (multi-page navigation +
+  tracking beacons, 20 distinct paths - clearly not a scan or an
+  attack) is trivially 100% of a quiet window's traffic, and
+  `FloodMinTotal: 20` is far below what one real session generates in a
+  minute (37 requests in the busiest observed minute alone).
+- **A busy real site** (~800 req/s): a single legitimate high-volume
+  client (almost certainly a backend's own heartbeat/health-check
+  traffic, all HTTP 200) sat around a 31-35% share, comfortably clearing
+  the 30% bar without being an attack.
+
+There's no way to raise *either* value enough on its own to cover both:
+raising `FloodMinTotal` far enough to exclude a quiet site's single
+visitor doesn't help the busy site (which clears any reasonable count
+floor trivially), and raising `FloodShare` alone doesn't help the quiet
+site (still 100%). Both needed to move together. Picked `FloodShare:
+0.60, FloodMinTotal: 100` specifically because they're the smallest
+round numbers that clear *both* observed false positives given the
+actual numbers above (60% > 35%, and 100 > 77) while presumably still
+being low enough to catch an actual single-IP flood, which by
+definition pushes far past either number. `ScanPaths`/`HammerIPs` were
+left unchanged - no false positives were reported against either of
+those two detectors on either site. Existing unit tests
+(`TestIPFloodTriggers`, `TestAlertResolvesWhenNoLongerTriggering`)
+updated to use sample counts that still clear the new, higher bar.
+
+This is a "best guess from two data points," not a claim that 0.60/100
+is universally right - it's still just the default; `--anomaly-ip-share`
+/`--anomaly-ip-min` exist precisely so a third site with a different
+profile isn't stuck with it.
+
 ## Deferred (explicitly, not forgotten)
 
 - Multi-file tailing in `--ui` (currently exactly one file).

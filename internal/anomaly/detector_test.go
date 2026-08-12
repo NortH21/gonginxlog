@@ -9,13 +9,13 @@ func TestIPFloodTriggers(t *testing.T) {
 	d := NewDetector(DefaultThresholds)
 	base := time.Now()
 
-	// 14 requests from the flooding IP, 6 from others: total is 20 (at
+	// 70 requests from the flooding IP, 30 from others: total is 100 (at
 	// the min-sample floor) and the flooding IP's 70% share clears the
-	// 30% threshold.
-	for i := 0; i < 14; i++ {
+	// 60% threshold.
+	for i := 0; i < 70; i++ {
 		d.Observe("1.2.3.4", "/x", base)
 	}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 30; i++ {
 		d.Observe("5.6.7.8", "/x", base)
 	}
 
@@ -35,9 +35,8 @@ func TestIPFloodBelowMinSampleDoesNotTrigger(t *testing.T) {
 	d := NewDetector(DefaultThresholds)
 	base := time.Now()
 
-	// Same 70/30 split, but total is only 10... wait we need below
-	// floodMinTotal (20). Use 4 total requests, all from one IP: 100%
-	// share but too few samples to be meaningful.
+	// Well below the min-sample floor (100): 4 total requests, all from
+	// one IP - 100% share but too few samples to be meaningful.
 	for i := 0; i < 4; i++ {
 		d.Observe("1.2.3.4", "/x", base)
 	}
@@ -95,10 +94,10 @@ func TestAlertResolvesWhenNoLongerTriggering(t *testing.T) {
 	d := NewDetector(DefaultThresholds)
 	base := time.Now()
 
-	for i := 0; i < 14; i++ {
+	for i := 0; i < 70; i++ {
 		d.Observe("1.2.3.4", "/x", base)
 	}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 30; i++ {
 		d.Observe("5.6.7.8", "/x", base)
 	}
 	alerts := d.Tick(base)
