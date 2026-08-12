@@ -462,6 +462,43 @@ is universally right - it's still just the default; `--anomaly-ip-share`
 /`--anomaly-ip-min` exist precisely so a third site with a different
 profile isn't stuck with it.
 
+### Git history was rewritten to remove real domains and the author's work email (2026-08-12, later still)
+
+Despite the earlier security review before the first push, two real
+domain names (a partner site's referer domain, and the hostname of one
+of the `--ui` test sessions) ended up committed in README/DESIGN
+examples anyway - caught by the user, not by me, after they'd already
+been pushed and were part of tagged releases (v0.1.0 through v0.3.1).
+Separately, every commit's author/committer email was the user's real
+work email (their git global config, not something set for this repo
+specifically), which also identifies their employer.
+
+Fixed both, all the way back through history, not just going forward:
+
+- `git filter-repo --replace-text <file>` to replace the two domain
+  strings everywhere they appeared across all commits (two old commits
+  had them, per `git rev-list --all | git grep`).
+- `git filter-repo --mailmap <file>` to remap every commit's
+  author/committer email to `north21@users.noreply.github.com` (GitHub's
+  own noreply-email convention), keeping the display name.
+- This rewrites every commit's SHA from that point on. All 5 existing
+  tags (v0.1.0-v0.3.1) got force-pushed to point at their rewritten
+  equivalents (`git push --tags --force`) rather than deleted/recreated,
+  and the GitHub Releases attached to those tag *names* kept working
+  (their uploaded binary assets aren't tied to git SHAs at all, and the
+  tag object just got repointed).
+- Took a local `.git` backup before running anything, and verified
+  clean (`git grep` over `git rev-list --all` finds nothing) both
+  locally and via the GitHub API/raw content *after* pushing, before
+  considering this done.
+
+**Standing rule, not just a one-time cleanup**: never put a real
+hostname/domain, real IP from a real log, or personal/work email into
+an example, comment, or commit in this repo - use `example.com`-style
+placeholders even when a real one would make an example more concrete.
+This bit us once already after an explicit security review; don't
+assume "I'll catch it in review" is enough.
+
 ## Deferred (explicitly, not forgotten)
 
 - Multi-file tailing in `--ui` (currently exactly one file).
