@@ -101,6 +101,20 @@ func (r *Record) Path() string {
 	return parts[1]
 }
 
+// PathWithoutQuery returns Path() with the query string - everything
+// from the first '?' onward - removed. High-cardinality query
+// parameters (numeric IDs, tokens, ...) are the usual reason a raw
+// path never repeats often enough to be a useful "top paths" entry;
+// trimming them is a cheap default that doesn't need per-site
+// configuration the way --routes-file's regex grouping does.
+func (r *Record) PathWithoutQuery() string {
+	p := r.Path()
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		return p[:i]
+	}
+	return p
+}
+
 // RequestTime parses $request_time (seconds, fractional).
 func (r *Record) RequestTime() (float64, bool) {
 	return r.parseFloatField("request_time")

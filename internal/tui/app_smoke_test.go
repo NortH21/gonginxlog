@@ -236,6 +236,79 @@ func TestAppSmokeStatic(t *testing.T) {
 	}
 }
 
+// TestBuildViewsRespectsShowAgentsReferers guards --show-agents/
+// --show-referers actually surfacing the agents/referers views (and
+// their hotkeys) - a config wiring bug here would silently drop a view
+// with no error, which is exactly what happened in practice (main.go
+// built tui.Config correctly, but nothing had asserted the view list
+// itself matched).
+func TestBuildViewsRespectsShowAgentsReferers(t *testing.T) {
+	logPath := writeTempLog(t)
+	spec := format.Default()
+	p, err := parser.New(spec)
+	if err != nil {
+		t.Fatalf("parser.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	app := NewApp(ctx, Config{
+		Paths:        []string{logPath},
+		Live:         false,
+		Parser:       p,
+		ShowAgents:   true,
+		ShowReferers: true,
+	})
+
+	if !hasView(app, "agents", '5') {
+		t.Fatalf("expected an 'agents' view with hotkey '5' when ShowAgents is true, got views %+v", viewIDs(app))
+	}
+	if !hasView(app, "referers", '6') {
+		t.Fatalf("expected a 'referers' view with hotkey '6' when ShowReferers is true, got views %+v", viewIDs(app))
+	}
+}
+
+func TestBuildViewsHideAgentsReferersByDefault(t *testing.T) {
+	logPath := writeTempLog(t)
+	spec := format.Default()
+	p, err := parser.New(spec)
+	if err != nil {
+		t.Fatalf("parser.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	app := NewApp(ctx, Config{
+		Paths:  []string{logPath},
+		Live:   false,
+		Parser: p,
+	})
+
+	if hasView(app, "agents", '5') {
+		t.Fatalf("expected no 'agents' view when ShowAgents is false, got views %+v", viewIDs(app))
+	}
+	if hasView(app, "referers", '6') {
+		t.Fatalf("expected no 'referers' view when ShowReferers is false, got views %+v", viewIDs(app))
+	}
+}
+
+func hasView(app *App, id string, key rune) bool {
+	for _, v := range app.views {
+		if v.id == id {
+			return v.key == key
+		}
+	}
+	return false
+}
+
+func viewIDs(app *App) []string {
+	ids := make([]string, len(app.views))
+	for i, v := range app.views {
+		ids[i] = v.id
+	}
+	return ids
+}
+
 func logLine(status string) string {
 	return `{"remote_addr":"203.0.113.5","country":"US","remote_user":"",` +
 		`"time_local":"12/Aug/2026:08:00:00 +0000","ssl_protocol":"","host":"example.com",` +

@@ -128,6 +128,7 @@ func main() {
 		routesFileFlag     = flag.String("routes-file", "", "YAML file of regex path->route rules; groups paths into bounded route labels for --top paths and enables the \"slowest routes\" report/view")
 		showAgentsFlag     = flag.Bool("show-agents", false, "include the Top user agents section/view (off by default)")
 		showReferersFlag   = flag.Bool("show-referers", false, "include the Top referers section/view (off by default)")
+		showPathArgsFlag   = flag.Bool("show-path-args", false, "keep each path's query string in the paths report/view instead of trimming it off at the first '?' (default: trimmed); ignored when --routes-file is set")
 		versionFlag        = flag.Bool("version", false, "print the version and exit")
 	)
 	var fields fieldFlags
@@ -210,13 +211,14 @@ Flags:
 			HammerIPs:     *anomalyHammerFlag,
 		}
 		runUI(files, p, filters, uiOptions{
-			trackCountry: trackCountry,
-			bufferSize:   *uiBufferFlag,
-			anomaly:      anomalyThresholds,
-			live:         live,
-			pathLabel:    routeLabeler(routeRules),
-			showAgents:   *showAgentsFlag,
-			showReferers: *showReferersFlag,
+			trackCountry:  trackCountry,
+			bufferSize:    *uiBufferFlag,
+			anomaly:       anomalyThresholds,
+			live:          live,
+			pathLabel:     routeLabeler(routeRules),
+			keepPathQuery: *showPathArgsFlag,
+			showAgents:    *showAgentsFlag,
+			showReferers:  *showReferersFlag,
 		})
 		return
 	}
@@ -230,6 +232,7 @@ Flags:
 	}
 
 	agg := stats.NewAggregator(*topFlag, bucket, trackCountry)
+	agg.SetKeepPathQuery(*showPathArgsFlag)
 	if labeler := routeLabeler(routeRules); labeler != nil {
 		agg.SetPathLabeler(labeler)
 	}
@@ -425,13 +428,14 @@ func runBatch(files []string, p parser.Parser, filters filter.And, agg *stats.Ag
 // uiOptions bundles --ui's less-central knobs so runUI's signature
 // doesn't grow a parameter per flag.
 type uiOptions struct {
-	trackCountry bool
-	bufferSize   int
-	anomaly      anomaly.Thresholds
-	live         bool
-	pathLabel    func(path string) string
-	showAgents   bool
-	showReferers bool
+	trackCountry  bool
+	bufferSize    int
+	anomaly       anomaly.Thresholds
+	live          bool
+	pathLabel     func(path string) string
+	keepPathQuery bool
+	showAgents    bool
+	showReferers  bool
 }
 
 func runUI(paths []string, p parser.Parser, filters filter.And, opts uiOptions) {
@@ -439,19 +443,20 @@ func runUI(paths []string, p parser.Parser, filters filter.And, opts uiOptions) 
 	defer stop()
 
 	app := tui.NewApp(ctx, tui.Config{
-		Version:      version,
-		Paths:        paths,
-		Live:         opts.live,
-		Parser:       p,
-		BaseFilters:  filters,
-		TrackCountry: opts.trackCountry,
-		BufferSize:   opts.bufferSize,
-		Refresh:      time.Second,
-		PollInterval: 500 * time.Millisecond,
-		Anomaly:      opts.anomaly,
-		PathLabel:    opts.pathLabel,
-		ShowAgents:   opts.showAgents,
-		ShowReferers: opts.showReferers,
+		Version:       version,
+		Paths:         paths,
+		Live:          opts.live,
+		Parser:        p,
+		BaseFilters:   filters,
+		TrackCountry:  opts.trackCountry,
+		BufferSize:    opts.bufferSize,
+		Refresh:       time.Second,
+		PollInterval:  500 * time.Millisecond,
+		Anomaly:       opts.anomaly,
+		PathLabel:     opts.pathLabel,
+		KeepPathQuery: opts.keepPathQuery,
+		ShowAgents:    opts.showAgents,
+		ShowReferers:  opts.showReferers,
 	})
 	if err := app.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		fatalf("%v", err)

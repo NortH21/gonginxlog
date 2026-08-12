@@ -68,6 +68,52 @@ func TestPathLabelerGroupsCountsAndTiming(t *testing.T) {
 	}
 }
 
+// TestTopPathsTrimsQueryByDefault covers the default (no --routes-file,
+// no --show-path-args) behavior: query strings are trimmed before
+// counting, so /foo?x=1 and /foo?y=2 collapse into one "/foo" entry
+// instead of each being its own effectively-unique row.
+func TestTopPathsTrimsQueryByDefault(t *testing.T) {
+	a := NewAggregator(0, DisabledBucket, false)
+	a.Add(rec("/foo?x=1", "0.1"))
+	a.Add(rec("/foo?y=2", "0.1"))
+	rep := a.Report()
+	if len(rep.TopPaths) != 1 {
+		t.Fatalf("expected the two queries to collapse into one path, got %+v", rep.TopPaths)
+	}
+	if got := rep.TopPaths[0]; got.Key != "/foo" || got.Count != 2 {
+		t.Fatalf("expected {/foo 2}, got %+v", got)
+	}
+}
+
+func TestTopPathsKeepsQueryWhenConfigured(t *testing.T) {
+	a := NewAggregator(0, DisabledBucket, false)
+	a.SetKeepPathQuery(true)
+	a.Add(rec("/foo?x=1", "0.1"))
+	a.Add(rec("/foo?y=2", "0.1"))
+	rep := a.Report()
+	if len(rep.TopPaths) != 2 {
+		t.Fatalf("expected the query strings to be kept as distinct paths, got %+v", rep.TopPaths)
+	}
+}
+
+// TestPathLabelerAlwaysSeesFullPathRegardlessOfKeepPathQuery: a
+// configured --routes-file labeler decides its own handling of query
+// strings via its own regex, so it must always receive the raw,
+// untrimmed path - keepPathQuery only applies to the fallback
+// (labeler-less) case.
+func TestPathLabelerAlwaysSeesFullPathRegardlessOfKeepPathQuery(t *testing.T) {
+	a := NewAggregator(0, DisabledBucket, false)
+	var seen string
+	a.SetPathLabeler(func(path string) string {
+		seen = path
+		return "route"
+	})
+	a.Add(rec("/foo?x=1", "0.1"))
+	if seen != "/foo?x=1" {
+		t.Fatalf("expected the labeler to see the full path+query, got %q", seen)
+	}
+}
+
 func TestPathLabelerBoundsRouteTimingMemory(t *testing.T) {
 	a := NewAggregator(0, DisabledBucket, false)
 	labels := []string{"a", "b", "c"}

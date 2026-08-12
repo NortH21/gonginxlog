@@ -63,7 +63,7 @@ func TestBuildDetailPageEscapesKeyInHeaderAndTitle(t *testing.T) {
 	}}
 	entries := []Entry{{Record: rec, Raw: "raw line"}}
 
-	page := buildDetailPage("user_agent", maliciousKey, 100, entries, false, -1, nil)
+	page := buildDetailPage("user_agent", maliciousKey, 100, entries, false, -1, nil, false)
 
 	flex, ok := page.(*tview.Flex)
 	if !ok {

@@ -16,12 +16,19 @@ import (
 // matchesDimension checks whether rec belongs to the drill-down key for
 // the given dimension. pathLabel is only used for "route" (the
 // route-grouped paths view, see internal/routes) - nil elsewhere.
-func matchesDimension(rec *record.Record, dimension, key string, pathLabel func(string) string) bool {
+// keepPathQuery mirrors stats.Aggregator's option of the same name: the
+// "path" dimension's key is trimmed of its query string by default, so
+// matching must trim the same way or every "path" drill-down would find
+// zero records.
+func matchesDimension(rec *record.Record, dimension, key string, pathLabel func(string) string, keepPathQuery bool) bool {
 	switch dimension {
 	case "ip":
 		return rec.RemoteAddr() == key
 	case "path":
-		return rec.Path() == key
+		if keepPathQuery {
+			return rec.Path() == key
+		}
+		return rec.PathWithoutQuery() == key
 	case "route":
 		if pathLabel == nil {
 			return false
@@ -79,11 +86,16 @@ type breakdown struct {
 // pathLabel, when set, groups the path breakdown into routes too
 // (labeled "ROUTE" instead of "PATH") - same reasoning as everywhere
 // else route grouping applies: bounded, consistent labels instead of
-// unbounded raw paths.
-func complementaryBreakdowns(dimension string, pathLabel func(path string) string) []breakdown {
+// unbounded raw paths. keepPathQuery mirrors stats.Aggregator's option
+// of the same name (only relevant when pathLabel is nil - a configured
+// routes labeler decides its own handling of query strings).
+func complementaryBreakdowns(dimension string, pathLabel func(path string) string, keepPathQuery bool) []breakdown {
 	byIP := breakdown{"IP", func(r *record.Record) string { return r.RemoteAddr() }}
 	pathColumn := "PATH"
-	pathExtract := func(r *record.Record) string { return r.Path() }
+	pathExtract := func(r *record.Record) string { return r.PathWithoutQuery() }
+	if keepPathQuery {
+		pathExtract = func(r *record.Record) string { return r.Path() }
+	}
 	if pathLabel != nil {
 		pathColumn = "ROUTE"
 		pathExtract = func(r *record.Record) string { return pathLabel(r.Path()) }
@@ -108,8 +120,9 @@ func complementaryBreakdowns(dimension string, pathLabel func(path string) strin
 // a negative value skips the "how much of this is actually in the
 // buffer" note (used when there's no such total to compare against,
 // e.g. drilling in from the alerts view).
-func buildDetailPage(dimension, key string, bufCap int, matched []Entry, trackCountry bool, allTimeCount int, pathLabel func(path string) string) tview.Primitive {
+func buildDetailPage(dimension, key string, bufCap int, matched []Entry, trackCountry bool, allTimeCount int, pathLabel func(path string) string, keepPathQuery bool) tview.Primitive {
 	agg := stats.NewAggregator(0, stats.DisabledBucket, trackCountry)
+	agg.SetKeepPathQuery(keepPathQuery)
 	if pathLabel != nil {
 		agg.SetPathLabeler(pathLabel)
 	}
@@ -143,7 +156,7 @@ func buildDetailPage(dimension, key string, bufCap int, matched []Entry, trackCo
 		AddItem(header, 2, 0, false).
 		AddItem(statusView.table, 0, 1, true)
 
-	for _, b := range complementaryBreakdowns(dimension, pathLabel) {
+	for _, b := range complementaryBreakdowns(dimension, pathLabel, keepPathQuery) {
 		compCounts := map[string]int{}
 		for _, e := range matched {
 			if v := b.extract(e.Record); v != "" {

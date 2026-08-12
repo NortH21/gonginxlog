@@ -63,6 +63,15 @@ type Aggregator struct {
 	pathLabeler  func(path string) string
 	routeTimings map[string]*routeTimingAccum
 
+	// keepPathQuery controls whether the "paths" top-N table keys on
+	// the full request path including its query string, or (the
+	// default, keepPathQuery == false, so the zero value is already
+	// correct) the path alone via Record.PathWithoutQuery. Only applies
+	// when pathLabeler is nil - a configured --routes-file labeler
+	// always gets the raw, untrimmed path, since its regexes may
+	// deliberately match against query parameters.
+	keepPathQuery bool
+
 	requestTimes  []float64
 	upstreamTimes []float64
 	bytesTotal    int64
@@ -107,6 +116,13 @@ func (a *Aggregator) SetPathLabeler(fn func(path string) string) {
 	}
 }
 
+// SetKeepPathQuery controls the "paths" table's default query-string
+// trimming (see keepPathQuery's doc comment). keep == true restores
+// the pre-trimming behavior of counting the full path+query verbatim.
+func (a *Aggregator) SetKeepPathQuery(keep bool) {
+	a.keepPathQuery = keep
+}
+
 // Add folds one matched record into the running aggregates.
 func (a *Aggregator) Add(r *record.Record) {
 	a.total++
@@ -118,6 +134,8 @@ func (a *Aggregator) Add(r *record.Record) {
 	path := r.Path()
 	if a.pathLabeler != nil {
 		path = a.pathLabeler(path)
+	} else if !a.keepPathQuery {
+		path = r.PathWithoutQuery()
 	}
 	if path != "" {
 		a.pathCounts[path]++

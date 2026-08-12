@@ -36,11 +36,15 @@ type Config struct {
 	// labels (see internal/routes) - passed straight to
 	// stats.Aggregator.SetPathLabeler wherever this package builds one.
 	// nil means "use raw paths", and the "routes" view doesn't appear.
-	PathLabel    func(path string) string
-	BufferSize   int                // ring buffer capacity backing the raw view + drill-down
-	Refresh      time.Duration      // stat refresh interval (Live only)
-	PollInterval time.Duration      // file-tail poll interval (Live only)
-	Anomaly      anomaly.Thresholds // trigger thresholds for the alerts view
+	PathLabel func(path string) string
+	// KeepPathQuery controls the "paths" view's default trimming of the
+	// query string from each path (see stats.Aggregator.SetKeepPathQuery)
+	// - only relevant when PathLabel is nil.
+	KeepPathQuery bool
+	BufferSize    int                // ring buffer capacity backing the raw view + drill-down
+	Refresh       time.Duration      // stat refresh interval (Live only)
+	PollInterval  time.Duration      // file-tail poll interval (Live only)
+	Anomaly       anomaly.Thresholds // trigger thresholds for the alerts view
 }
 
 // App is a live dashboard over one tailed nginx log file.
@@ -118,6 +122,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 // finishes on its own.
 func (a *App) scanFile(ctx context.Context, liveFilter filter.And) (*stats.Aggregator, *RingBuffer, *anomaly.Detector) {
 	agg := stats.NewAggregator(0, stats.AutoBucket, a.cfg.TrackCountry)
+	agg.SetKeepPathQuery(a.cfg.KeepPathQuery)
 	if a.cfg.PathLabel != nil {
 		agg.SetPathLabeler(a.cfg.PathLabel)
 	}
@@ -518,11 +523,11 @@ func (a *App) showDetail(dimension, key string, allTimeCount int) {
 
 	var matched []Entry
 	for _, e := range all {
-		if matchesDimension(e.Record, dimension, key, a.cfg.PathLabel) {
+		if matchesDimension(e.Record, dimension, key, a.cfg.PathLabel, a.cfg.KeepPathQuery) {
 			matched = append(matched, e)
 		}
 	}
-	page := buildDetailPage(dimension, key, bufCap, matched, a.cfg.TrackCountry, allTimeCount, a.cfg.PathLabel)
+	page := buildDetailPage(dimension, key, bufCap, matched, a.cfg.TrackCountry, allTimeCount, a.cfg.PathLabel, a.cfg.KeepPathQuery)
 	a.pages.AddAndSwitchToPage("detail", page, true)
 }
 

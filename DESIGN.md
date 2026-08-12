@@ -684,6 +684,55 @@ control byte or a literal `[tag]`-shaped substring to display correctly:
   accidentally drops the `safeKey` substitution at one of the two call
   sites would fail a test, not just look fine in code review.
 
+## Default query-string trimming for the "paths" table (2026-08-13)
+
+Real-world feedback: a "paths" top-N table on a busy site is close to
+useless without `--routes-file` configured, because query parameters
+(numeric IDs, tokens, session-ish values) make almost every raw path
+unique - e.g. `/api/profile.php?stand=0&id=3002559145` never repeats
+with that exact query string, so it shows up as its own 1-count row
+instead of contributing to a meaningful `/api/profile.php` total.
+`--routes-file` already solves this generally (regex → bounded label),
+but configuring it is real effort or the wrong effort for a case that's
+just "the query string is noise" - most of the time.
+
+**Decision**: trim everything from the first `?` onward before using a
+path as a `pathCounts`/"paths" key, by default, with a new
+`--show-path-args` flag to opt back into the full path+query (the
+previous, and until now the only, behavior). Precedence: a
+`--routes-file` labeler, when configured, always wins and always sees
+the *raw, untrimmed* path - its regexes may deliberately match against
+query parameters, so this default must never mutate what reaches it.
+
+- `record.Record.PathWithoutQuery()` - the new primitive, `Path()` cut
+  at the first `?` (`strings.IndexByte`, no allocation when there's no
+  query string to trim).
+- `stats.Aggregator.keepPathQuery bool` (zero value `false`, i.e.
+  trimming is the default - deliberately chosen so no existing
+  construction of `*Aggregator` needs to change to get the new
+  behavior) + `SetKeepPathQuery(bool)`. `Add()`: `if pathLabeler != nil
+  { use labeler(raw path) } else if !keepPathQuery { use
+  PathWithoutQuery() } else { use raw path }`.
+- The "path" dimension's drill-down matching (`matchesDimension` in
+  `internal/tui/detail.go`) and the PATH breakdown column
+  (`complementaryBreakdowns`) both needed the same `keepPathQuery bool`
+  threaded through and the identical trim-or-not logic - otherwise
+  drilling into a "paths" row (now keyed by the trimmed path) would
+  compare against each record's full untrimmed `Path()` and find zero
+  matches, the exact class of bug `matchesDimension`'s country-dash
+  normalization already exists to avoid (see above). `buildDetailPage`
+  also calls `agg.SetKeepPathQuery` on its own throwaway Aggregator for
+  the same reason.
+- `main.go`: `--show-path-args` (bool, default `false`) wired into both
+  the batch `Aggregator` and `tui.Config.KeepPathQuery`, same one flag
+  covers both surfaces like `--show-agents`/`--show-referers` do.
+- Tests added at both layers this touches: `internal/record` (the
+  trimming primitive itself), `internal/stats` (aggregation collapses
+  same-path-different-query into one entry by default, keeps them
+  distinct when configured, and the labeler still sees the untrimmed
+  path regardless), `internal/tui` (drill-down matching and the PATH
+  breakdown column, both trimmed-by-default and kept-when-configured).
+
 ## Deferred (explicitly, not forgotten)
 
 - Live tailing of **multiple** files in `--ui` (static multi-file

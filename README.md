@@ -185,6 +185,11 @@ gonginxlog --nginx-conf /etc/nginx/nginx.conf --format-name main_json access.log
   каждого, по умолчанию 10; таблица стран появляется только если в
   log_format есть `$geoip_country_code` или `$geoip2_data_country_code`
   — запросы без определённой страны считаются в строке `-`)
+  — по умолчанию у путей отбрасывается строка запроса (всё после `?`),
+  иначе `/foo?id=1` и `/foo?id=2` считались бы как два разных пути;
+  `--show-path-args` возвращает полный путь с параметрами (игнорируется,
+  если задан `--routes-file` — там группировку целиком определяют его
+  правила)
 - перцентили request_time / upstream_response_time (avg, p50, p90, p99, max)
 - суммарный объём переданных байт
 - гистограмма запросов по времени (`--bucket`; по умолчанию `auto` сам
@@ -211,6 +216,7 @@ gonginxlog --lines access.log               # отчёт + совпавшие с
 gonginxlog --lines --report=false access.log  # только совпавшие строки, как grep
 gonginxlog --json access.log                # отчёт в виде JSON вместо текстовых таблиц
 gonginxlog --show-agents --show-referers access.log  # включить UA/referer таблицы
+gonginxlog --show-path-args access.log      # не отбрасывать строку запроса у путей
 ```
 
 ## Группировка путей по маршрутам (`--routes-file`)
