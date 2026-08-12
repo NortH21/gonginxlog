@@ -12,6 +12,18 @@ import (
 	"github.com/north21/gonginxlog/internal/parser"
 )
 
+// syncRead runs fn on the app's own tview event goroutine (the same one
+// that owns lastReport/activeView/etc.) and returns its result, so tests
+// can inspect App state without racing the ticker/key-handler goroutines
+// that mutate it - a straight `app.lastReport` read from the test
+// goroutine would be a real, if test-only, data race once app.Run has
+// started.
+func syncRead[T any](app *App, fn func() T) T {
+	ch := make(chan T, 1)
+	app.app.QueueUpdateDraw(func() { ch <- fn() })
+	return <-ch
+}
+
 // TestAppSmoke drives the App headlessly via a tcell SimulationScreen -
 // there's no real TTY in CI/this sandbox, so this is how the app's key
 // handling and view switching get verified without a human watching a
@@ -37,6 +49,7 @@ func TestAppSmoke(t *testing.T) {
 		PollInterval: 30 * time.Millisecond,
 	})
 
+	// Safe to read directly: no goroutines are running yet at this point.
 	if app.lastReport == nil || app.lastReport.TotalRequests != 20 {
 		t.Fatalf("expected the seed scan to have counted 20 requests, got %+v", app.lastReport)
 	}
@@ -49,29 +62,29 @@ func TestAppSmoke(t *testing.T) {
 	go func() { runErrCh <- app.Run(ctx) }()
 	time.Sleep(150 * time.Millisecond) // let the first tick/render happen
 
-	if got := app.views[app.activeView].id; got != "status" {
+	if got := syncRead(app, func() string { return app.views[app.activeView].id }); got != "status" {
 		t.Fatalf("expected the default view to be 'status', got %q", got)
 	}
 
 	screen.InjectKey(tcell.KeyRune, '2', tcell.ModNone)
 	time.Sleep(80 * time.Millisecond)
-	if got := app.views[app.activeView].id; got != "ips" {
+	if got := syncRead(app, func() string { return app.views[app.activeView].id }); got != "ips" {
 		t.Fatalf("expected view 'ips' after pressing '2', got %q", got)
 	}
-	if len(app.views[app.activeView].entries) == 0 {
+	if n := syncRead(app, func() int { return len(app.views[app.activeView].entries) }); n == 0 {
 		t.Fatalf("expected the ips view to have entries after the seed scan")
 	}
 
 	// Enter should drill down into the top row.
 	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
 	time.Sleep(80 * time.Millisecond)
-	if !app.pages.HasPage("detail") {
+	if !syncRead(app, func() bool { return app.pages.HasPage("detail") }) {
 		t.Fatalf("expected a 'detail' page to be pushed after Enter")
 	}
 
 	screen.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)
 	time.Sleep(80 * time.Millisecond)
-	if app.pages.HasPage("detail") {
+	if syncRead(app, func() bool { return app.pages.HasPage("detail") }) {
 		t.Fatalf("expected Esc to close the detail page")
 	}
 
@@ -80,7 +93,7 @@ func TestAppSmoke(t *testing.T) {
 	// seeded 404s.
 	screen.InjectKey(tcell.KeyRune, '/', tcell.ModNone)
 	time.Sleep(30 * time.Millisecond)
-	if !app.filterFocused {
+	if !syncRead(app, func() bool { return app.filterFocused }) {
 		t.Fatalf("expected the filter bar to be focused after '/'")
 	}
 	for _, r := range "status:404" {
@@ -89,21 +102,21 @@ func TestAppSmoke(t *testing.T) {
 	screen.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
 	time.Sleep(150 * time.Millisecond) // reseed runs on a goroutine
 
-	if app.liveFilterText != "status:404" {
-		t.Fatalf("expected liveFilterText to be %q, got %q", "status:404", app.liveFilterText)
+	if got := syncRead(app, func() string { return app.liveFilterText }); got != "status:404" {
+		t.Fatalf("expected liveFilterText to be %q, got %q", "status:404", got)
 	}
-	if app.lastReport == nil || app.lastReport.TotalRequests != 5 {
-		t.Fatalf("expected the status:404 filter to narrow the report to 5 requests, got %+v", app.lastReport)
+	if n := syncRead(app, func() int { return app.lastReport.TotalRequests }); n != 5 {
+		t.Fatalf("expected the status:404 filter to narrow the report to 5 requests, got %d", n)
 	}
 
 	// "x" clears back to the full set.
 	screen.InjectKey(tcell.KeyRune, 'x', tcell.ModNone)
 	time.Sleep(150 * time.Millisecond)
-	if app.liveFilterText != "" {
-		t.Fatalf("expected liveFilterText to be cleared, got %q", app.liveFilterText)
+	if got := syncRead(app, func() string { return app.liveFilterText }); got != "" {
+		t.Fatalf("expected liveFilterText to be cleared, got %q", got)
 	}
-	if app.lastReport == nil || app.lastReport.TotalRequests != 20 {
-		t.Fatalf("expected clearing the filter to restore all 20 requests, got %+v", app.lastReport)
+	if n := syncRead(app, func() int { return app.lastReport.TotalRequests }); n != 20 {
+		t.Fatalf("expected clearing the filter to restore all 20 requests, got %d", n)
 	}
 
 	screen.InjectKey(tcell.KeyRune, 'q', tcell.ModNone)

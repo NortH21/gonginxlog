@@ -138,13 +138,24 @@ func (a *Aggregator) Add(r *record.Record) {
 	}
 }
 
-// Report snapshots the current aggregates into a Report.
+// Report snapshots the current aggregates into a Report. The returned
+// Report must be a fully independent copy - callers (notably the live
+// TUI) hold onto it and read it from other goroutines after Report()
+// returns and its caller has released whatever lock guarded Add(), so
+// any field that aliased Aggregator's own state instead of copying it
+// would be a live data race (this bit us once already: StatusDist used
+// to be assigned directly from a.statusCounts).
 func (a *Aggregator) Report() *Report {
+	statusDist := make(map[int]int, len(a.statusCounts))
+	for code, count := range a.statusCounts {
+		statusDist[code] = count
+	}
+
 	rep := &Report{
 		TotalRequests:  a.total,
 		From:           a.minTime,
 		To:             a.maxTime,
-		StatusDist:     a.statusCounts,
+		StatusDist:     statusDist,
 		TopIPs:         topN(a.ipCounts, a.topN),
 		TopPaths:       topN(a.pathCounts, a.topN),
 		TopUserAgents:  topN(a.uaCounts, a.topN),

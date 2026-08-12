@@ -347,6 +347,58 @@ shipped. That surfaced issues no amount of synthetic testing had caught:
   than the buffer)` note to the header instead of silently showing
   nothing.
 
+### A real crash: concurrent map read/write (2026-08-12, later same day)
+
+On the *previous* version the user hit a hard process crash - a Go
+runtime fatal error (`internal/runtime/maps.fatal`, not a normal
+`panic`, so `recover()` can't catch it) while `--ui` was running against
+real traffic. This is Go detecting a **concurrent map read and map
+write** and killing the process outright. Root-caused to two related
+bugs, both now fixed and verified with `go test -race` (which reproduces
+the exact same class of bug deterministically instead of waiting for
+unlucky timing in production):
+
+1. **`stats.Aggregator.Report()`'s `StatusDist` field was a live alias,
+   not a snapshot**: `StatusDist: a.statusCounts` assigned the *same map
+   object* `Add()` keeps mutating, instead of a copy. `Report()`'s own
+   doc comment says it "snapshots the current aggregates" - every other
+   field honored that (the `Top*` fields go through `topN()`, which
+   builds a fresh slice; `Histogram` builds a fresh slice from a fresh
+   local map), but `StatusDist` didn't. Once the live TUI holds a
+   `*Report` across goroutines (which it always does - that's the whole
+   point of `Report()`), any concurrent `Add()` racing a later read of
+   `rep.StatusDist` (e.g. `renderStatusTable` iterating it from tview's
+   event goroutine while `ingestLive` is still calling `Add()` from the
+   tail goroutine) is a live, ever-present race - not an edge case, the
+   normal steady state. Fixed by copying `a.statusCounts` into a new map
+   before constructing the `Report`.
+2. **`App.reseed`'s goroutine called `agg.Report()` *after* releasing
+   `a.mu`**: by that point `agg` had already been assigned to `a.agg`,
+   so `Report()`'s internal iteration over `a.ipCounts`/`a.pathCounts`/
+   etc. could run at the same time as `ingestLive`'s `a.agg.Add()` (which
+   *does* take `a.mu`, but that doesn't help if the reader doesn't).
+   Fixed by moving the `Report()` call back inside the locked section,
+   matching the pattern `tickLoop` already used correctly.
+
+Bug (1) alone would have caused a race pretty much continuously under
+any real traffic, independent of (2) - it's the more likely explanation
+for what the user actually hit. Both needed fixing since either one is
+sufficient on its own.
+
+**Verification note**: getting `go test ./internal/tui/... -race` clean
+also required fixing the *test* itself (`app_smoke_test.go`) - it was
+reading `app.lastReport`/`app.activeView`/etc. directly from the test
+goroutine while `--ui`'s internal goroutines were mutating them, which
+`-race` correctly flags even though nothing outside the test ever
+touches those fields except through tview's own serialized event loop.
+Added a small `syncRead[T]` helper that runs the read via
+`app.QueueUpdateDraw` and receives the result over a channel, so
+assertions are synchronized through the same mechanism the app itself
+uses for every other cross-goroutine handoff. `go test ./... -race
+-count=10` is now clean; run this (not just a plain `go test`) before
+trusting any future change to `internal/tui`'s concurrency - a plain run
+without `-race` will not catch this class of bug.
+
 ## Deferred (explicitly, not forgotten)
 
 - Multi-file tailing in `--ui` (currently exactly one file).

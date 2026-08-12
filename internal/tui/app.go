@@ -486,9 +486,15 @@ func (a *App) reseed(newFilter filter.And) {
 		a.mu.Lock()
 		a.agg, a.buf, a.detector = agg, buf, det
 		a.liveFilter = newFilter
+		// Report() must run while a.mu is still held: agg is now also
+		// a.agg, and ingestLive's a.agg.Add() (called under the same
+		// lock from the tail goroutine) could otherwise run
+		// concurrently with Report()'s map iteration - a real
+		// "concurrent map read and map write" crash found in
+		// production, not a hypothetical one.
+		rep := agg.Report()
 		a.mu.Unlock()
 
-		rep := agg.Report()
 		a.app.QueueUpdateDraw(func() {
 			a.lastReport = rep
 			a.lastAlerts = nil
