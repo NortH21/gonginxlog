@@ -1,0 +1,7 @@
+# local test logs - large, real, not meant for git
+/tests/*.log
+/tests/*.log.*
+/tests/*.gz
+
+# build output
+/gonginxlog

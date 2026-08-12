@@ -75,6 +75,29 @@ log_format main_json escape=json '{'
 - **Repo**: git-initialized here; module path
   `github.com/north21/gonginxlog`.
 
+## Maintenance rule
+
+Whenever a change touches user-facing behavior (flags, output, supported
+formats, roadmap) or the architecture, update **both** `README.md` (usage)
+and this file (rationale/decisions/layout) in the same change. This was an
+explicit user instruction, not a suggestion.
+
+## Implementation notes worth remembering
+
+- Go's stdlib `flag` package stops parsing at the first non-flag token,
+  so `gonginxlog access.log --top 5` would otherwise silently swallow
+  `--top 5` as extra file arguments. `main.go`'s `reorderArgs` splits
+  `os.Args` into flag tokens and positional tokens *before* calling
+  `flag.Parse`, so flags can be given before or after the file paths. A
+  lone `-` is always treated as positional (the stdin marker), never as
+  a flag.
+- Validated end-to-end against a real production log
+  (`tests/example.com_access.log`, 430MB / 208k lines, real
+  `main_json` format): all lines parsed with zero `log_format` mismatches,
+  filters/report/`--json`/gzip/stdin/multi-file/`-f` all exercised. Real
+  logs like this are large and not meant for git — see `.gitignore`
+  (`/tests/*.log*`, `/tests/*.gz`).
+
 ## Deferred (explicitly, not forgotten)
 
 Anomaly detection, to be added once there's a TUI/GUI:
