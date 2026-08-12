@@ -48,7 +48,7 @@ func renderFooterHint(tv *tview.TextView, viewTitle, filterText string, message 
 }
 
 func hotkeyBar() string {
-	return " [yellow]1[-:-:-]status  [yellow]2[-:-:-]ips  [yellow]3[-:-:-]countries  [yellow]4[-:-:-]paths  " +
-		"[yellow]5[-:-:-]agents  [yellow]6[-:-:-]referers  [yellow]7[-:-:-]timeline  [yellow]l[-:-:-]raw  [yellow]a[-:-:-]alerts  " +
-		"[yellow]/[-:-:-]filter  [yellow]x[-:-:-]clear  [yellow]Enter[-:-:-]detail  [yellow]Esc[-:-:-]back  [yellow]q[-:-:-]quit"
+	return " [yellow]1[-:-:-] status  [yellow]2[-:-:-] ips  [yellow]3[-:-:-] countries  [yellow]4[-:-:-] paths  " +
+		"[yellow]5[-:-:-] agents  [yellow]6[-:-:-] referers  [yellow]7[-:-:-] timeline  [yellow]l[-:-:-] raw  [yellow]a[-:-:-] alerts  " +
+		"[yellow]/[-:-:-] filter  [yellow]x[-:-:-] clear  [yellow]Enter[-:-:-] detail  [yellow]Esc[-:-:-] back  [yellow]q[-:-:-] quit"
 }

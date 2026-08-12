@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/north21/gonginxlog/internal/anomaly"
 	"github.com/north21/gonginxlog/internal/filter"
 	"github.com/north21/gonginxlog/internal/format"
 	"github.com/north21/gonginxlog/internal/input"
@@ -39,19 +40,23 @@ var (
 // following token as its value, so reorderArgs can tell a flag's value
 // apart from a positional file argument.
 var valueFlagNames = map[string]bool{
-	"nginx-conf":  true,
-	"format-name": true,
-	"since":       true,
-	"until":       true,
-	"last":        true,
-	"status":      true,
-	"ip":          true,
-	"country":     true,
-	"grep":        true,
-	"top":         true,
-	"bucket":      true,
-	"field":       true,
-	"ui-buffer":   true,
+	"nginx-conf":         true,
+	"format-name":        true,
+	"since":              true,
+	"until":              true,
+	"last":               true,
+	"status":             true,
+	"ip":                 true,
+	"country":            true,
+	"grep":               true,
+	"top":                true,
+	"bucket":             true,
+	"field":              true,
+	"ui-buffer":          true,
+	"anomaly-ip-share":   true,
+	"anomaly-ip-min":     true,
+	"anomaly-scan-paths": true,
+	"anomaly-hammer-ips": true,
 }
 
 // reorderArgs splits args into flag tokens (kept in their original order,
@@ -95,24 +100,28 @@ func (f *fieldFlags) Set(v string) error {
 
 func main() {
 	var (
-		nginxConfFlag  = flag.String("nginx-conf", "", "path to nginx.conf to read the log_format from (includes are followed)")
-		formatNameFlag = flag.String("format-name", format.DefaultName, "name of the log_format directive to use")
-		sinceFlag      = flag.String("since", "", "keep entries at or after this time (RFC3339 or nginx time_local layout)")
-		untilFlag      = flag.String("until", "", "keep entries strictly before this time")
-		lastFlag       = flag.String("last", "", "keep entries from the last duration, e.g. 1h30m (overrides --since)")
-		statusFlag     = flag.String("status", "", "comma-separated status filter: exact codes, classes (5xx), ranges (500-599)")
-		ipFlag         = flag.String("ip", "", "comma-separated client IP filter: exact addresses and/or CIDR subnets")
-		countryFlag    = flag.String("country", "", "comma-separated country code filter (e.g. RU,US), matched against $geoip_country_code/$geoip2_data_country_code")
-		grepFlag       = flag.String("grep", "", "regexp that must match the raw log line")
-		jsonFlag       = flag.Bool("json", false, "print the report as JSON instead of text tables")
-		linesFlag      = flag.Bool("lines", false, "print matching raw lines (like grep)")
-		reportFlag     = flag.Bool("report", true, "print the aggregated report")
-		topFlag        = flag.Int("top", 10, "number of rows to show in each top-N table")
-		bucketFlag     = flag.String("bucket", "auto", "time bucket size for the requests-over-time histogram: a duration (e.g. 30m), \"auto\" (pick from the data's time span), or 0 to disable")
-		followFlag     = flag.Bool("f", false, "follow a single log file for new lines (tail -f); prints matching lines only")
-		uiFlag         = flag.Bool("ui", false, "open a live k9s-style TUI dashboard (implies tailing; requires exactly one real file)")
-		uiBufferFlag   = flag.Int("ui-buffer", 10000, "ring buffer size backing the --ui raw view and drill-down")
-		versionFlag    = flag.Bool("version", false, "print the version and exit")
+		nginxConfFlag      = flag.String("nginx-conf", "", "path to nginx.conf to read the log_format from (includes are followed)")
+		formatNameFlag     = flag.String("format-name", format.DefaultName, "name of the log_format directive to use")
+		sinceFlag          = flag.String("since", "", "keep entries at or after this time (RFC3339 or nginx time_local layout)")
+		untilFlag          = flag.String("until", "", "keep entries strictly before this time")
+		lastFlag           = flag.String("last", "", "keep entries from the last duration, e.g. 1h30m (overrides --since)")
+		statusFlag         = flag.String("status", "", "comma-separated status filter: exact codes, classes (5xx), ranges (500-599)")
+		ipFlag             = flag.String("ip", "", "comma-separated client IP filter: exact addresses and/or CIDR subnets")
+		countryFlag        = flag.String("country", "", "comma-separated country code filter (e.g. RU,US), matched against $geoip_country_code/$geoip2_data_country_code")
+		grepFlag           = flag.String("grep", "", "regexp that must match the raw log line")
+		jsonFlag           = flag.Bool("json", false, "print the report as JSON instead of text tables")
+		linesFlag          = flag.Bool("lines", false, "print matching raw lines (like grep)")
+		reportFlag         = flag.Bool("report", true, "print the aggregated report")
+		topFlag            = flag.Int("top", 10, "number of rows to show in each top-N table")
+		bucketFlag         = flag.String("bucket", "auto", "time bucket size for the requests-over-time histogram: a duration (e.g. 30m), \"auto\" (pick from the data's time span), or 0 to disable")
+		followFlag         = flag.Bool("f", false, "follow a single log file for new lines (tail -f); prints matching lines only")
+		uiFlag             = flag.Bool("ui", false, "open a live k9s-style TUI dashboard (implies tailing; requires exactly one real file)")
+		uiBufferFlag       = flag.Int("ui-buffer", 10000, "ring buffer size backing the --ui raw view and drill-down")
+		anomalyIPShareFlag = flag.Float64("anomaly-ip-share", anomaly.DefaultThresholds.FloodShare, "--ui alerts: min share (0-1) of traffic from one IP in the last 60s to flag as a flood")
+		anomalyIPMinFlag   = flag.Int("anomaly-ip-min", anomaly.DefaultThresholds.FloodMinTotal, "--ui alerts: min total requests in that 60s window before the flood share is even checked")
+		anomalyScanFlag    = flag.Int("anomaly-scan-paths", anomaly.DefaultThresholds.ScanPaths, "--ui alerts: min distinct paths one IP must hit in 10s to flag as scanning")
+		anomalyHammerFlag  = flag.Int("anomaly-hammer-ips", anomaly.DefaultThresholds.HammerIPs, "--ui alerts: min distinct IPs hitting one path in 10s to flag as a distributed hammer")
+		versionFlag        = flag.Bool("version", false, "print the version and exit")
 	)
 	var fields fieldFlags
 	flag.Var(&fields, "field", "field=regexp filter on one named field, repeatable (e.g. --field http_user_agent=bot)")
@@ -176,7 +185,13 @@ Flags:
 		if len(files) != 1 || files[0] == "-" {
 			fatalf("--ui requires exactly one real file path")
 		}
-		runUI(files[0], p, filters, trackCountry, *uiBufferFlag)
+		anomalyThresholds := anomaly.Thresholds{
+			FloodShare:    *anomalyIPShareFlag,
+			FloodMinTotal: *anomalyIPMinFlag,
+			ScanPaths:     *anomalyScanFlag,
+			HammerIPs:     *anomalyHammerFlag,
+		}
+		runUI(files[0], p, filters, trackCountry, *uiBufferFlag, anomalyThresholds)
 		return
 	}
 
@@ -357,7 +372,7 @@ func runBatch(files []string, p parser.Parser, filters filter.And, agg *stats.Ag
 	}
 }
 
-func runUI(path string, p parser.Parser, filters filter.And, trackCountry bool, bufferSize int) {
+func runUI(path string, p parser.Parser, filters filter.And, trackCountry bool, bufferSize int, thresholds anomaly.Thresholds) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -369,6 +384,7 @@ func runUI(path string, p parser.Parser, filters filter.And, trackCountry bool, 
 		BufferSize:   bufferSize,
 		Refresh:      time.Second,
 		PollInterval: 500 * time.Millisecond,
+		Anomaly:      thresholds,
 	})
 	if err := app.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		fatalf("%v", err)

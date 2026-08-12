@@ -6,7 +6,7 @@ import (
 )
 
 func TestIPFloodTriggers(t *testing.T) {
-	d := NewDetector()
+	d := NewDetector(DefaultThresholds)
 	base := time.Now()
 
 	// 14 requests from the flooding IP, 6 from others: total is 20 (at
@@ -32,7 +32,7 @@ func TestIPFloodTriggers(t *testing.T) {
 }
 
 func TestIPFloodBelowMinSampleDoesNotTrigger(t *testing.T) {
-	d := NewDetector()
+	d := NewDetector(DefaultThresholds)
 	base := time.Now()
 
 	// Same 70/30 split, but total is only 10... wait we need below
@@ -51,10 +51,10 @@ func TestIPFloodBelowMinSampleDoesNotTrigger(t *testing.T) {
 }
 
 func TestURLScanTriggers(t *testing.T) {
-	d := NewDetector()
+	d := NewDetector(DefaultThresholds)
 	base := time.Now()
 
-	for i := 0; i < scanThreshold; i++ {
+	for i := 0; i < DefaultThresholds.ScanPaths; i++ {
 		d.Observe("9.9.9.9", "/path"+string(rune('a'+i)), base)
 	}
 
@@ -71,10 +71,10 @@ func TestURLScanTriggers(t *testing.T) {
 }
 
 func TestDistributedHammerTriggers(t *testing.T) {
-	d := NewDetector()
+	d := NewDetector(DefaultThresholds)
 	base := time.Now()
 
-	for i := 0; i < hammerThreshold; i++ {
+	for i := 0; i < DefaultThresholds.HammerIPs; i++ {
 		ip := "10.0.0." + string(rune('1'+i))
 		d.Observe(ip, "/login", base)
 	}
@@ -92,7 +92,7 @@ func TestDistributedHammerTriggers(t *testing.T) {
 }
 
 func TestAlertResolvesWhenNoLongerTriggering(t *testing.T) {
-	d := NewDetector()
+	d := NewDetector(DefaultThresholds)
 	base := time.Now()
 
 	for i := 0; i < 14; i++ {
@@ -129,7 +129,7 @@ func TestSeedHistoryDoesNotFalselyTrigger(t *testing.T) {
 	// Simulates runUI's seed phase: a burst of old records (by their own
 	// timestamps) that would trip every threshold if eviction used
 	// record time instead of wall-clock time.
-	d := NewDetector()
+	d := NewDetector(DefaultThresholds)
 	seedTime := time.Now().Add(-2 * time.Hour)
 
 	for i := 0; i < 100; i++ {

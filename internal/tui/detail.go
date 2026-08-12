@@ -22,7 +22,15 @@ func matchesDimension(rec *record.Record, dimension, key string) bool {
 	case "path":
 		return rec.Path() == key
 	case "country":
-		return rec.Country() == key
+		// Aggregator.Add labels unresolved countries as the literal "-"
+		// (see internal/stats), but Record.Country returns "" for those
+		// - normalize the same way here so drilling into the "-" row
+		// actually matches its records instead of always finding zero.
+		country := rec.Country()
+		if country == "" {
+			country = "-"
+		}
+		return country == key
 	case "user_agent":
 		return rec.UserAgent() == key
 	case "referer":
@@ -48,25 +56,42 @@ func alertDimension(t anomaly.Type) string {
 	}
 }
 
-// complementaryDimension picks which "what else" breakdown to show
-// alongside the status table in a drill-down page - e.g. drilling into
-// an IP shows the paths it hit; drilling into a path shows the IPs that
-// hit it.
-func complementaryDimension(dimension string) (label string, extract func(*record.Record) string) {
+// breakdown is one "what else" table to show alongside the status table
+// in a drill-down page.
+type breakdown struct {
+	label   string
+	extract func(*record.Record) string
+}
+
+// complementaryBreakdowns picks which "what else" breakdown(s) to show
+// alongside the status table in a drill-down page. Drilling into an IP
+// or a path only needs the other one; drilling into anything else
+// (status, country, user agent, referer) shows both, since either can
+// be the actionable answer to "who/what is behind this" (e.g. status
+// 500 -> which IPs hit it *and* which paths raised it).
+func complementaryBreakdowns(dimension string) []breakdown {
+	byIP := breakdown{"IP", func(r *record.Record) string { return r.RemoteAddr() }}
+	byPath := breakdown{"PATH", func(r *record.Record) string { return r.Path() }}
 	switch dimension {
+	case "ip":
+		return []breakdown{byPath}
 	case "path":
-		return "IP", func(r *record.Record) string { return r.RemoteAddr() }
-	case "ip", "user_agent", "referer", "country", "status":
-		return "PATH", func(r *record.Record) string { return r.Path() }
+		return []breakdown{byIP}
+	case "status", "country", "user_agent", "referer":
+		return []breakdown{byIP, byPath}
 	default:
-		return "", nil
+		return nil
 	}
 }
 
 // buildDetailPage builds a self-contained drill-down page for one
 // dimension/key pair from records already known to match it (the caller
-// filters the ring buffer before calling this).
-func buildDetailPage(dimension, key string, bufCap int, matched []Entry, trackCountry bool) tview.Primitive {
+// filters the ring buffer before calling this). allTimeCount is the
+// key's count from the live (unbounded) Aggregator, if known - passing
+// a negative value skips the "how much of this is actually in the
+// buffer" note (used when there's no such total to compare against,
+// e.g. drilling in from the alerts view).
+func buildDetailPage(dimension, key string, bufCap int, matched []Entry, trackCountry bool, allTimeCount int) tview.Primitive {
 	agg := stats.NewAggregator(0, stats.DisabledBucket, trackCountry)
 	for _, e := range matched {
 		agg.Add(e.Record)
@@ -74,7 +99,11 @@ func buildDetailPage(dimension, key string, bufCap int, matched []Entry, trackCo
 	rep := agg.Report()
 
 	header := tview.NewTextView().SetDynamicColors(true)
-	fmt.Fprintf(header, " [white::b]%s[-:-:-] = %s   %d request(s) among the last %d buffered\n", dimension, key, len(matched), bufCap)
+	fmt.Fprintf(header, " [white::b]%s[-:-:-] = %s   %d request(s) among the last %d buffered", dimension, key, len(matched), bufCap)
+	if allTimeCount >= 0 && len(matched) < allTimeCount {
+		fmt.Fprintf(header, "   [yellow](%d total all-time - the rest are older than the buffer)[-:-:-]", allTimeCount)
+	}
+	fmt.Fprint(header, "\n")
 
 	statusEntries := make([]stats.CountEntry, 0, len(rep.StatusDist))
 	for code, c := range rep.StatusDist {
@@ -88,10 +117,10 @@ func buildDetailPage(dimension, key string, bufCap int, matched []Entry, trackCo
 		AddItem(header, 2, 0, false).
 		AddItem(statusView.table, 0, 1, true)
 
-	if compLabel, extract := complementaryDimension(dimension); extract != nil {
+	for _, b := range complementaryBreakdowns(dimension) {
 		compCounts := map[string]int{}
 		for _, e := range matched {
-			if v := extract(e.Record); v != "" {
+			if v := b.extract(e.Record); v != "" {
 				compCounts[v]++
 			}
 		}
@@ -104,7 +133,7 @@ func buildDetailPage(dimension, key string, bufCap int, matched []Entry, trackCo
 			compEntries = compEntries[:20]
 		}
 		compView := &viewDef{table: newCountTable()}
-		renderCountTable(compView, compEntries, len(matched), compLabel)
+		renderCountTable(compView, compEntries, len(matched), b.label)
 		flex.AddItem(compView.table, 0, 1, false)
 	}
 

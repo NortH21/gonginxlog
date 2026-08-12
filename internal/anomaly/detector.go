@@ -1,7 +1,11 @@
-// Package anomaly implements simple, fixed-threshold sliding-window
-// detectors for the live TUI: one IP flooding traffic, one IP scanning
-// many distinct paths, and one path being hammered from many distinct
-// IPs.
+// Package anomaly implements simple sliding-window detectors for the
+// live TUI: one IP flooding traffic, one IP scanning many distinct
+// paths, and one path being hammered from many distinct IPs. The
+// windows (60s/10s/10s) are fixed; the trigger thresholds are
+// configurable via Thresholds, since what counts as "too concentrated"
+// varies a lot by site - a single legitimate client (a game backend's
+// own heartbeat/matchmaking traffic, a health checker, ...) can easily
+// clear a 30% share on a quiet endpoint without being an attack.
 package anomaly
 
 import (
@@ -21,18 +25,38 @@ const (
 )
 
 const (
-	floodWindow   = 60 * time.Second
-	floodShare    = 0.30
-	floodMinTotal = 20
-
-	scanWindow    = 10 * time.Second
-	scanThreshold = 20
-
-	hammerWindow    = 10 * time.Second
-	hammerThreshold = 15
+	floodWindow  = 60 * time.Second
+	scanWindow   = 10 * time.Second
+	hammerWindow = 10 * time.Second
 
 	maxAlertHistory = 200
 )
+
+// Thresholds controls when each detector fires. DefaultThresholds
+// matches gonginxlog's original fixed values.
+type Thresholds struct {
+	// FloodShare is the minimum fraction (0..1) of traffic in the last
+	// 60s a single IP must account for to trigger ip_flood.
+	FloodShare float64
+	// FloodMinTotal is the minimum number of requests in that 60s window
+	// before FloodShare is even evaluated, so a handful of requests to a
+	// quiet site doesn't trip it just because one of them is 100%.
+	FloodMinTotal int
+	// ScanPaths is the minimum number of distinct paths one IP must hit
+	// in the last 10s to trigger url_scan.
+	ScanPaths int
+	// HammerIPs is the minimum number of distinct IPs hitting one path
+	// in the last 10s to trigger distributed_hammer.
+	HammerIPs int
+}
+
+// DefaultThresholds are gonginxlog's original built-in values.
+var DefaultThresholds = Thresholds{
+	FloodShare:    0.30,
+	FloodMinTotal: 20,
+	ScanPaths:     20,
+	HammerIPs:     15,
+}
 
 // Alert is one detector finding, coalesced by (Type, Key): repeat
 // triggers update LastSeen/Detail on the same entry instead of
@@ -64,9 +88,11 @@ type setBucket struct {
 }
 
 // Detector accumulates Observe calls into per-second sliding windows and
-// evaluates the three fixed thresholds on each Tick.
+// evaluates thresholds on each Tick.
 type Detector struct {
 	mu sync.Mutex
+
+	thresholds Thresholds
 
 	floodBuckets  map[int64]*floodBucket
 	scanBuckets   map[int64]*setBucket // ip -> distinct paths seen that second
@@ -75,9 +101,11 @@ type Detector struct {
 	alerts map[alertKey]*Alert
 }
 
-// NewDetector creates an empty Detector.
-func NewDetector() *Detector {
+// NewDetector creates an empty Detector using t as its trigger
+// thresholds (see DefaultThresholds).
+func NewDetector(t Thresholds) *Detector {
 	return &Detector{
+		thresholds:    t,
 		floodBuckets:  map[int64]*floodBucket{},
 		scanBuckets:   map[int64]*setBucket{},
 		hammerBuckets: map[int64]*setBucket{},
@@ -191,10 +219,10 @@ func (d *Detector) checkFlood(now time.Time) {
 	}
 
 	triggered := map[string]string{}
-	if total >= floodMinTotal {
+	if total >= d.thresholds.FloodMinTotal {
 		for ip, c := range counts {
 			share := float64(c) / float64(total)
-			if share >= floodShare {
+			if share >= d.thresholds.FloodShare {
 				triggered[ip] = fmt.Sprintf("%.0f%% of traffic (%d/%d req) in last %s", share*100, c, total, floodWindow)
 			}
 		}
@@ -206,7 +234,7 @@ func (d *Detector) checkScan(now time.Time) {
 	union := unionSets(d.scanBuckets)
 	triggered := map[string]string{}
 	for ip, paths := range union {
-		if len(paths) >= scanThreshold {
+		if len(paths) >= d.thresholds.ScanPaths {
 			triggered[ip] = fmt.Sprintf("%d distinct paths in last %s", len(paths), scanWindow)
 		}
 	}
@@ -217,7 +245,7 @@ func (d *Detector) checkHammer(now time.Time) {
 	union := unionSets(d.hammerBuckets)
 	triggered := map[string]string{}
 	for path, ips := range union {
-		if len(ips) >= hammerThreshold {
+		if len(ips) >= d.thresholds.HammerIPs {
 			triggered[path] = fmt.Sprintf("%d distinct IPs in last %s", len(ips), hammerWindow)
 		}
 	}

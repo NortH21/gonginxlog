@@ -26,9 +26,10 @@ type Config struct {
 	Parser       parser.Parser
 	BaseFilters  filter.And // from CLI startup flags; always ANDed with the in-TUI filter
 	TrackCountry bool
-	BufferSize   int           // ring buffer capacity backing the raw view + drill-down
-	Refresh      time.Duration // stat refresh interval
-	PollInterval time.Duration // file-tail poll interval
+	BufferSize   int                // ring buffer capacity backing the raw view + drill-down
+	Refresh      time.Duration      // stat refresh interval
+	PollInterval time.Duration      // file-tail poll interval
+	Anomaly      anomaly.Thresholds // trigger thresholds for the alerts view
 }
 
 // App is a live dashboard over one tailed nginx log file.
@@ -78,6 +79,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	if cfg.BufferSize <= 0 {
 		cfg.BufferSize = 10000
 	}
+	if cfg.Anomaly == (anomaly.Thresholds{}) {
+		cfg.Anomaly = anomaly.DefaultThresholds
+	}
 
 	a := &App{
 		cfg:       cfg,
@@ -102,7 +106,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 func (a *App) scanFile(ctx context.Context, liveFilter filter.And) (*stats.Aggregator, *RingBuffer, *anomaly.Detector) {
 	agg := stats.NewAggregator(0, stats.AutoBucket, a.cfg.TrackCountry)
 	buf := NewRingBuffer(a.cfg.BufferSize)
-	det := anomaly.NewDetector()
+	det := anomaly.NewDetector(a.cfg.Anomaly)
 
 	rc, err := input.Open([]string{a.cfg.Path})
 	if err != nil {
@@ -391,7 +395,7 @@ func (a *App) onEnter(v *viewDef, row int) {
 	if idx < 0 || idx >= len(v.entries) {
 		return
 	}
-	a.showDetail(v.dimension, v.entries[idx].Key)
+	a.showDetail(v.dimension, v.entries[idx].Key, v.entries[idx].Count)
 }
 
 func (a *App) onAlertEnter(row int) {
@@ -401,11 +405,17 @@ func (a *App) onAlertEnter(row int) {
 	}
 	al := a.lastAlerts[idx]
 	if dim := alertDimension(al.Type); dim != "" {
-		a.showDetail(dim, al.Key)
+		// No all-time total to compare against for an alert (it's not
+		// tied to one of the CountEntry views), so skip that note.
+		a.showDetail(dim, al.Key, -1)
 	}
 }
 
-func (a *App) showDetail(dimension, key string) {
+// showDetail pushes a drill-down page for dimension=key. allTimeCount is
+// the row's count from the live (unbounded) Aggregator if known, so the
+// page can note when the ring buffer (bounded, recent-only) doesn't have
+// all of it; pass -1 when there's no such total (see onAlertEnter).
+func (a *App) showDetail(dimension, key string, allTimeCount int) {
 	a.mu.Lock()
 	all := a.buf.Entries()
 	bufCap := a.buf.Cap()
@@ -417,7 +427,7 @@ func (a *App) showDetail(dimension, key string) {
 			matched = append(matched, e)
 		}
 	}
-	page := buildDetailPage(dimension, key, bufCap, matched, a.cfg.TrackCountry)
+	page := buildDetailPage(dimension, key, bufCap, matched, a.cfg.TrackCountry, allTimeCount)
 	a.pages.AddAndSwitchToPage("detail", page, true)
 }
 

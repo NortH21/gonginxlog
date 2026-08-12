@@ -53,7 +53,10 @@
   `release.yml` + goreleaser).
 - Live TUI-дашборд (`--ui`): переключаемые виды, фильтр `/` (свой
   мини-язык, см. `internal/tui/filter_dsl.go`), drill-down по `Enter`,
-  детекция аномалий (`internal/anomaly`) с бейджем в хедере.
+  детекция аномалий (`internal/anomaly`) с бейджем в хедере; пороги
+  настраиваются флагами `--anomaly-*` (проверено и поправлено по
+  фидбеку с реальных production-логов — см. DESIGN.md, раздел "Fixes
+  and changes from real production use").
 
 Первая и единственная внешняя зависимость — `github.com/rivo/tview`
 (+ `gdamore/tcell`), добавлена ради `--ui`. До этого проект был чистым

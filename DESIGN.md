@@ -289,10 +289,67 @@ dashboard — targeting live mode from day one, not a static-file browser.
   (those flags are simply ignored when `--ui` is set; `main.go` checks
   `--ui` first and returns before reaching that logic).
 
+### Fixes and changes from real production use (2026-08-12)
+
+The user ran `--ui` against two real production nginx logs (one
+low-traffic, one at roughly 800 req/s) right after the first version
+shipped. That surfaced issues no amount of synthetic testing had caught:
+
+- **Hotkey bar had no space after the key**: `hotkeyBar()` in
+  `header.go` had `[yellow]1[-:-:-]status` - the closing color tag was
+  immediately followed by the label with nothing between them, so it
+  rendered as `1status` `2ips` etc. Fixed by adding a space after every
+  closing tag.
+- **Drilling into `country=-` always showed 0 requests, even though the
+  countries table showed a nonzero share for it**: a real bug, not a
+  buffer-staleness artifact. `Aggregator.Add` labels an unresolved
+  country as the literal string `"-"` (see the country feature notes
+  above), but `Record.Country()` itself returns `""` for that case -
+  `matchesDimension`'s `"country"` case compared `rec.Country() == key`
+  directly, so it was comparing `"" == "-"`, which is never true. Fixed
+  by normalizing `""` to `"-"` in `matchesDimension` the same way the
+  aggregator does. Covered by `TestMatchesDimensionCountryDash`.
+- **Drilling into a status code only showed a "top paths" breakdown,
+  not IPs**: the user's reaction was "shouldn't this show IPs? isn't
+  this supposed to be a top list?" - fair, since "which IPs are causing
+  these 500s" is at least as useful as "which paths". Generalized
+  `complementaryDimension` (singular) into `complementaryBreakdowns`
+  (plural): drilling into `ip` or `path` still only shows the other one
+  (asking "which paths did this IP hit" doesn't also need "which IPs
+  hit this IP"), but `status`/`country`/`user_agent`/`referer` now show
+  **both** an IP and a PATH breakdown table.
+- **A single legitimate IP (2833 requests, all HTTP 200) tripped the
+  fixed 30%-in-60s ip_flood threshold** on the high-traffic log - the
+  user's own assessment was "this is legitimate, just a lot of it"
+  (very plausibly a game backend's own heartbeat/matchmaking traffic or
+  a health checker, common on this kind of service). This is exactly
+  the failure mode anticipated when thresholds were first designed
+  ("what counts as concentrated varies a lot by site") but the fixed
+  values turned out to bite on the very first real target. Rather than
+  guess at better universal numbers, the four threshold values became
+  CLI flags (`--anomaly-ip-share`, `--anomaly-ip-min`,
+  `--anomaly-scan-paths`, `--anomaly-hammer-ips`) backed by
+  `anomaly.Thresholds`/`anomaly.DefaultThresholds`, passed through
+  `tui.Config.Anomaly`. The three window durations (60s/10s/10s) stay
+  fixed - only the trigger values needed tuning per the feedback, and
+  keeping the windows fixed keeps the flag surface small. Defaults are
+  unchanged from the original values; this is a knob, not a fix to the
+  defaults themselves, since there's no universally "right" number.
+- **A single "0 requests, 1 total all-time" drill-down (status 500,
+  exactly one occurrence) looked like a bug** on the high-traffic log:
+  143k+ total requests against a 10000-entry ring buffer means a rare
+  event from early in the session is almost certainly already evicted.
+  This one *is* the documented ring-buffer-recency limitation, not a
+  new bug - but the page gave no indication of *why* it was empty.
+  `buildDetailPage` now takes the row's all-time count (from the live,
+  unbounded `Aggregator`, passed in by `onEnter`) and, when the buffered
+  match count is lower, adds a `(N total all-time - the rest are older
+  than the buffer)` note to the header instead of silently showing
+  nothing.
+
 ## Deferred (explicitly, not forgotten)
 
 - Multi-file tailing in `--ui` (currently exactly one file).
-- Configurable anomaly thresholds (currently the fixed values above).
 - Interactive TUI browsing of a static, non-live file.
 
 ## Package layout
