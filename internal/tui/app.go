@@ -22,6 +22,7 @@ import (
 
 // Config configures a live TUI session.
 type Config struct {
+	Version      string // shown in the header, e.g. the release tag - "" is fine, just shows blank
 	Path         string
 	Parser       parser.Parser
 	BaseFilters  filter.And // from CLI startup flags; always ANDed with the in-TUI filter
@@ -44,6 +45,7 @@ type App struct {
 	footer   *tview.TextView
 
 	filterFocused bool
+	paused        bool // set/read from both the key-handler and tick goroutines; guarded by mu
 
 	views      []*viewDef
 	activeView int
@@ -267,6 +269,13 @@ func (a *App) tickLoop(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			a.mu.Lock()
+			paused := a.paused
+			a.mu.Unlock()
+			if paused {
+				continue
+			}
+
+			a.mu.Lock()
 			rep := a.agg.Report()
 			alerts := a.detector.Tick(now)
 			a.mu.Unlock()
@@ -335,7 +344,10 @@ func (a *App) refreshHeaderFooter(message string) {
 			activeAlerts++
 		}
 	}
-	renderHeader(a.header, a.cfg.Path, rep, activeAlerts, a.startedAt, a.lastRate, false)
+	a.mu.Lock()
+	paused := a.paused
+	a.mu.Unlock()
+	renderHeader(a.header, a.cfg.Version, a.cfg.Path, rep, activeAlerts, a.startedAt, a.lastRate, paused, false)
 
 	v := a.views[a.activeView]
 	renderFooterHint(a.footer, v.title, a.liveFilterText, message)
@@ -364,6 +376,9 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		case 'x':
 			a.clearFilter()
 			return nil
+		case 'p':
+			a.togglePause()
+			return nil
 		case 'j':
 			return tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone)
 		case 'k':
@@ -387,6 +402,30 @@ func (a *App) switchToView(i int) {
 	a.activeView = i
 	a.pages.SwitchToPage(a.views[i].id)
 	a.renderActiveView()
+	a.refreshHeaderFooter("")
+}
+
+// togglePause freezes/unfreezes the display: tickLoop stops
+// recomputing and redrawing while paused, but ingestLive keeps feeding
+// the live Aggregator/RingBuffer/Detector in the background regardless
+// - nothing is missed, the screen just stops changing until resumed.
+// On resume, refreshes immediately rather than waiting for the next
+// tick, so there's no visible lag before the screen catches up.
+func (a *App) togglePause() {
+	a.mu.Lock()
+	a.paused = !a.paused
+	resumed := !a.paused
+	a.mu.Unlock()
+
+	if resumed {
+		a.mu.Lock()
+		rep := a.agg.Report()
+		alerts := a.detector.Tick(time.Now())
+		a.mu.Unlock()
+		a.lastReport = rep
+		a.lastAlerts = alerts
+		a.renderActiveView()
+	}
 	a.refreshHeaderFooter("")
 }
 

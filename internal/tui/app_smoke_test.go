@@ -119,6 +119,28 @@ func TestAppSmoke(t *testing.T) {
 		t.Fatalf("expected clearing the filter to restore all 20 requests, got %d", n)
 	}
 
+	// "p" pauses: new appended lines must still be ingested in the
+	// background, but lastReport must not change until resumed.
+	screen.InjectKey(tcell.KeyRune, 'p', tcell.ModNone)
+	time.Sleep(30 * time.Millisecond)
+	if !syncRead(app, func() bool { return app.paused }) {
+		t.Fatalf("expected paused=true after pressing 'p'")
+	}
+	appendLine(t, logPath, "200")
+	time.Sleep(150 * time.Millisecond) // long enough for several ticks, if unpaused
+	if n := syncRead(app, func() int { return app.lastReport.TotalRequests }); n != 20 {
+		t.Fatalf("expected lastReport to stay at 20 while paused, got %d", n)
+	}
+
+	screen.InjectKey(tcell.KeyRune, 'p', tcell.ModNone)
+	time.Sleep(80 * time.Millisecond)
+	if syncRead(app, func() bool { return app.paused }) {
+		t.Fatalf("expected paused=false after pressing 'p' again")
+	}
+	if n := syncRead(app, func() int { return app.lastReport.TotalRequests }); n != 21 {
+		t.Fatalf("expected lastReport to catch up to 21 after resuming, got %d", n)
+	}
+
 	screen.InjectKey(tcell.KeyRune, 'q', tcell.ModNone)
 	select {
 	case err := <-runErrCh:
@@ -131,6 +153,16 @@ func TestAppSmoke(t *testing.T) {
 	}
 }
 
+func logLine(status string) string {
+	return `{"remote_addr":"203.0.113.5","country":"US","remote_user":"",` +
+		`"time_local":"12/Aug/2026:08:00:00 +0000","ssl_protocol":"","host":"example.com",` +
+		`"request":"GET /foo HTTP/1.1","status":"` + status + `","bytes_sent":"100","http_referer":"-",` +
+		`"http_user_agent":"curl/8.0","http_cookie":"-","http_x_forwarded_for":"-",` +
+		`"request_time":"0.01","request_length":"10","upstream_addr":"-",` +
+		`"upstream_response_time":"-","upstream_status":"-","upstream_cache_status":"-",` +
+		`"x-request-id":"1"}` + "\n"
+}
+
 func writeTempLog(t *testing.T) string {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "access-*.log")
@@ -139,26 +171,29 @@ func writeTempLog(t *testing.T) string {
 	}
 	defer f.Close()
 
-	line := func(status string) string {
-		return `{"remote_addr":"203.0.113.5","country":"US","remote_user":"",` +
-			`"time_local":"12/Aug/2026:08:00:00 +0000","ssl_protocol":"","host":"example.com",` +
-			`"request":"GET /foo HTTP/1.1","status":"` + status + `","bytes_sent":"100","http_referer":"-",` +
-			`"http_user_agent":"curl/8.0","http_cookie":"-","http_x_forwarded_for":"-",` +
-			`"request_time":"0.01","request_length":"10","upstream_addr":"-",` +
-			`"upstream_response_time":"-","upstream_status":"-","upstream_cache_status":"-",` +
-			`"x-request-id":"1"}` + "\n"
-	}
 	// 15 x 200 + 5 x 404, so the smoke test can exercise --status:404
 	// narrowing the live report to a known count.
 	for i := 0; i < 15; i++ {
-		if _, err := f.WriteString(line("200")); err != nil {
+		if _, err := f.WriteString(logLine("200")); err != nil {
 			t.Fatalf("write temp log: %v", err)
 		}
 	}
 	for i := 0; i < 5; i++ {
-		if _, err := f.WriteString(line("404")); err != nil {
+		if _, err := f.WriteString(logLine("404")); err != nil {
 			t.Fatalf("write temp log: %v", err)
 		}
 	}
 	return f.Name()
+}
+
+func appendLine(t *testing.T, path, status string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("open temp log for append: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(logLine(status)); err != nil {
+		t.Fatalf("append temp log: %v", err)
+	}
 }

@@ -17,11 +17,15 @@ func newHeader() *tview.TextView {
 
 // renderHeader must only be called from the main goroutine (inside a
 // key handler) or via app.QueueUpdateDraw (inside the tick loop).
-func renderHeader(tv *tview.TextView, path string, rep *stats.Report, activeAlerts int, startedAt time.Time, reqPerSec float64, reloading bool) {
+func renderHeader(tv *tview.TextView, version, path string, rep *stats.Report, activeAlerts int, startedAt time.Time, reqPerSec float64, paused, reloading bool) {
 	tv.Clear()
 	uptime := time.Since(startedAt).Truncate(time.Second)
-	fmt.Fprintf(tv, " [white::b]gonginxlog[-:-:-]  %s  [green::b]● LIVE[-:-:-]   req/s: %.0f   total: %d   uptime: %s",
-		path, reqPerSec, rep.TotalRequests, uptime)
+	state := "[green::b]● LIVE[-:-:-]"
+	if paused {
+		state = "[yellow::b]⏸ PAUSED[-:-:-]"
+	}
+	fmt.Fprintf(tv, " [white::b]gonginxlog %s[-:-:-]  %s  %s   req/s: %.0f   total: %d   uptime: %s",
+		version, path, state, reqPerSec, rep.TotalRequests, uptime)
 	if activeAlerts > 0 {
 		fmt.Fprintf(tv, "   [red::b]⚠ %d alert(s)[-:-:-]", activeAlerts)
 	}
@@ -50,5 +54,5 @@ func renderFooterHint(tv *tview.TextView, viewTitle, filterText string, message 
 func hotkeyBar() string {
 	return " [yellow]1[-:-:-] status  [yellow]2[-:-:-] ips  [yellow]3[-:-:-] countries  [yellow]4[-:-:-] paths  " +
 		"[yellow]5[-:-:-] agents  [yellow]6[-:-:-] referers  [yellow]7[-:-:-] timeline  [yellow]l[-:-:-] raw  [yellow]a[-:-:-] alerts  " +
-		"[yellow]/[-:-:-] filter  [yellow]x[-:-:-] clear  [yellow]Enter[-:-:-] detail  [yellow]Esc[-:-:-] back  [yellow]q[-:-:-] quit"
+		"[yellow]/[-:-:-] filter  [yellow]x[-:-:-] clear  [yellow]p[-:-:-] pause  [yellow]Enter[-:-:-] detail  [yellow]Esc[-:-:-] back  [yellow]q[-:-:-] quit"
 }

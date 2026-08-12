@@ -377,6 +377,7 @@ func runUI(path string, p parser.Parser, filters filter.And, trackCountry bool, 
 	defer stop()
 
 	app := tui.NewApp(ctx, tui.Config{
+		Version:      version,
 		Path:         path,
 		Parser:       p,
 		BaseFilters:  filters,

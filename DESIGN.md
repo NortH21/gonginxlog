@@ -399,6 +399,32 @@ uses for every other cross-goroutine handoff. `go test ./... -race
 trusting any future change to `internal/tui`'s concurrency - a plain run
 without `-race` will not catch this class of bug.
 
+### Version in the header, and a pause hotkey (2026-08-12, later still)
+
+Directly motivated by the "am I even running the fixed version?"
+back-and-forth over the crash above: `Config.Version` (set from
+`main.go`'s existing `version` var, the same one `-ldflags -X
+main.version=...` populates) is now threaded through to
+`renderHeader`, shown as `gonginxlog vX.Y.Z` at the front of the header
+line. No new flag - it's just always shown, same as `--version`'s
+output but visible without leaving the dashboard.
+
+`p` toggles pause, by analogy with k9s/htop-style freeze (the user's
+own framing). Design choice: pausing freezes **the display only**,
+not data collection - `tickLoop` skips its recompute-and-redraw step
+entirely while `a.paused` (checked under `a.mu`, since it's written
+from the key-handler goroutine and read from `tickLoop`'s), but
+`ingestLive` keeps running unconditionally in the background, so
+nothing arriving during a pause is lost. On resume, `togglePause` does
+one immediate `Report()`/`Tick()` + render rather than waiting for the
+next tick, so there's no lag before the screen catches up to
+whatever accumulated while paused. The header's `● LIVE` becomes
+`⏸ PAUSED` so the frozen state is visually obvious, matching the
+existing `⚠ N alert(s)` badge pattern. `TestAppSmoke` gained a
+pause/resume case: append a line while paused and assert
+`lastReport.TotalRequests` doesn't move, then resume and assert it
+catches up - passes under `-race`.
+
 ## Deferred (explicitly, not forgotten)
 
 - Multi-file tailing in `--ui` (currently exactly one file).
