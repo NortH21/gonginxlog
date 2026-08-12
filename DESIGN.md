@@ -79,9 +79,14 @@ log_format main_json escape=json '{'
 ## Maintenance rule
 
 Whenever a change touches user-facing behavior (flags, output, supported
-formats, roadmap) or the architecture, update **both** `README.md` (usage)
-and this file (rationale/decisions/layout) in the same change. This was an
-explicit user instruction, not a suggestion.
+formats, roadmap) or the architecture, update **all three** docs in the
+same change: `README.md` (usage/examples, **in Russian** since
+2026-08-12 — the maintainer's working language), this file
+(rationale/decisions/layout, in English, for contributors), and
+`CLAUDE.md` (short status snapshot, in Russian, auto-loaded by Claude
+Code at the start of every session in this repo) if the overall project
+status changed. This was an explicit user instruction, not a
+suggestion.
 
 ## Implementation notes worth remembering
 

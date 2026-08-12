@@ -1,66 +1,117 @@
 # gonginxlog
 
-A CLI tool that parses nginx access logs the way they're actually
-configured — by reading the real `log_format` directive (from an
-`nginx.conf`, or a built-in default) instead of assuming a fixed layout.
-Filter by time, status, client IP, country, or arbitrary regex, get a
-goaccess-style aggregated report, or open a live k9s-style TUI dashboard
-(`--ui`) with anomaly alerts.
+CLI-инструмент для парсинга access-логов nginx так, как они реально
+настроены — читая настоящую директиву `log_format` (из `nginx.conf`,
+либо встроенный дефолт), а не полагаясь на жёстко заданный формат.
+Фильтрация по времени, статусу, IP клиента, стране или произвольному
+regex, агрегированный отчёт в стиле goaccess, либо живой TUI-дашборд в
+стиле k9s (`--ui`) с детекцией аномалий.
 
-## Build
+## Сборка
 
 ```sh
 go build -o gonginxlog .
 ```
 
-(or just `go run . <flags> <logfile>` while developing)
+(или `go run . <флаги> <файл_лога>` во время разработки)
 
-## Quick start
+## Быстрый старт
 
 ```sh
-# default main_json (escape=json) format, full report
+# дефолтный main_json (escape=json) формат, полный отчёт
 ./gonginxlog access.log
 
-# only 5xx from one IP in the last hour, as raw matching lines
+# только 5xx с одного IP за последний час, как совпавшие строки
 ./gonginxlog --ip 203.0.113.5 --status 5xx --last 1h --lines --report=false access.log
 
-# read the log_format from a real nginx.conf (include directives are followed)
+# формат log_format берём из реального nginx.conf (include учитываются)
 ./gonginxlog --nginx-conf /etc/nginx/nginx.conf --format-name main_json access.log
 
-# tail a live file (raw lines only)
+# тайлинг живого файла (только сырые строки)
 ./gonginxlog -f /var/log/nginx/access.log
 
-# live k9s-style dashboard
+# живой дашборд в стиле k9s
 ./gonginxlog --ui /var/log/nginx/access.log
 ```
 
-Flags can be given before or after the file paths — `gonginxlog
-access.log --top 5` and `gonginxlog --top 5 access.log` both work.
+Флаги можно указывать до или после путей к файлам — `gonginxlog
+access.log --top 5` и `gonginxlog --top 5 access.log` работают одинаково.
 
-`gonginxlog --version` prints the build's version/commit/date. `error:`
-and `warning:` messages are colored (red/yellow) when stderr is a
-terminal; set `NO_COLOR=1` to turn that off.
+`gonginxlog --version` печатает версию/коммит/дату сборки. Сообщения
+`error:` и `warning:` подсвечиваются цветом (красный/жёлтый), если
+stderr — терминал; `NO_COLOR=1` отключает подсветку.
 
-## Input
-
-Positional arguments are one or more log files, read and concatenated in
-order:
+## Примеры на каждый день
 
 ```sh
-gonginxlog access.log access.log.1 access.log.2.gz   # multiple files, gzip transparently decompressed
-cat access.log | gonginxlog -                          # "-" reads stdin
-gonginxlog -f access.log                                # follow mode (tail -f)
+# сколько всего 5xx и на каких путях они возникают (batch-отчёт покажет топ путей)
+./gonginxlog --status 5xx access.log
+
+# конкретный клиент подозрительно активен — что он делал за последние 10 минут
+./gonginxlog --ip 198.51.100.77 --last 10m --lines --report=false access.log
+
+# перебор /login с одного IP — сколько попыток и с каким UA
+./gonginxlog --ip 198.51.100.77 --field request='POST /login' access.log
+
+# весь НЕуспешный трафик (не 2xx) из одной страны — прямого "исключить" нет,
+# но можно перечислить остальные классы явно
+./gonginxlog --country RU --status 1xx,3xx,4xx,5xx access.log
+
+# найти ботов по User-Agent
+./gonginxlog --field http_user_agent='(?i)bot|crawler|spider' --lines --report=false access.log
+
+# конкретный referer (например, откуда идёт трафик на промо-страницу)
+./gonginxlog --field http_referer='partner-site.example.com' access.log
+
+# только запросы с аномально долгим request_time (через grep по сырой JSON-строке)
+./gonginxlog --grep '"request_time":"([1-9][0-9]|[0-9]{3,})\.' access.log
+
+# несколько ротированных логов и gzip-архивы сразу
+./gonginxlog access.log access.log.1 access.log.2.gz --top 20
+
+# лог с удалённого сервера через ssh, без копирования на диск
+ssh prod-fe03 'cat /var/log/nginx/access.log' | ./gonginxlog -
+
+# отчёт как JSON — для дальнейшей обработки через jq
+./gonginxlog --json access.log | jq '.TopIPs[0:5]'
+
+# отчёт как JSON — топ стран с процентом от общего числа запросов
+./gonginxlog --json access.log | jq '.TotalRequests as $t | .TopCountries | map({country: .Key, pct: (((.Count/$t*1000)|round)/10)})'
+
+# сравнить трафик за два конкретных получаса (--since/--until нужна полная дата, не только время)
+./gonginxlog --since 2026-07-22T15:00:00+03:00 --until 2026-07-22T15:30:00+03:00 access.log
+./gonginxlog --since 2026-07-22T15:30:00+03:00 --until 2026-07-22T16:00:00+03:00 access.log
+
+# полчаса детализации по временной гистограмме вместо авто-подбора бакета
+./gonginxlog --bucket 30m access.log
+
+# конфиг с несколькими log_format — явно выбираем нужный
+./gonginxlog --nginx-conf /etc/nginx/nginx.conf --format-name json_combined access.log
+
+# тайлинг конкретного виртуального хоста в реальном времени
+./gonginxlog -f /var/log/nginx/access.log | grep --line-buffered 'example.com'
 ```
 
-`-f`/`--follow` takes exactly one real file path (not `-`, not multiple
-files) and streams newly appended matching lines. It reopens the file if
-it shrinks (log rotation via `copytruncate` or rename+recreate). It
-doesn't compute any stats — for that, live or not, use `--ui` (see
-[Live TUI](#live-tui-dashboard---ui) below) or the batch report.
+## Ввод данных
 
-## Choosing the log_format
+Позиционные аргументы — один или несколько файлов лога, читаются и
+объединяются по порядку:
 
-By default gonginxlog uses a built-in format equivalent to:
+```sh
+gonginxlog access.log access.log.1 access.log.2.gz   # несколько файлов, gzip распаковывается прозрачно
+cat access.log | gonginxlog -                          # "-" читает stdin
+gonginxlog -f access.log                                # режим tail -f
+```
+
+`-f`/`--follow` принимает ровно один реальный файл (не `-`, не несколько
+файлов) и стримит новые совпавшие строки. Пересоздаёт файл, если он
+"похудел" (ротация через `copytruncate` или rename+recreate). Никакой
+статистики не считает — для статистики, живой или нет, используйте
+`--ui` (см. [Live TUI](#live-tui-дашборд---ui) ниже) или batch-отчёт.
+
+## Выбор log_format
+
+По умолчанию gonginxlog использует встроенный формат, эквивалентный:
 
 ```
 log_format main_json escape=json '{'
@@ -68,122 +119,139 @@ log_format main_json escape=json '{'
 '}';
 ```
 
-To use your actual nginx config instead:
+Чтобы использовать свой реальный nginx-конфиг:
 
 ```sh
 gonginxlog --nginx-conf /etc/nginx/nginx.conf --format-name main_json access.log
 ```
 
-- `--nginx-conf` is read along with everything it `include`s (globs and
-  all, recursively) — so a `log_format` defined in `conf.d/*.conf` or
-  `sites-enabled/*` is found too.
-- `--format-name` picks which `log_format <name> ...;` directive to use
-  when a conf defines more than one.
-- Both `escape=json` templates (parsed as real JSON, key order doesn't
-  matter) and classic non-JSON templates (`combined`-style, compiled into
-  a generated regexp from the `$variable` tokens) are supported.
-- Fields are matched internally by nginx **variable** name, not by
-  whatever JSON key you chose — `"x-request-id":"$request_id"` is still
-  understood as `request_id`. This is what lets filters and the report
-  work regardless of custom JSON key naming.
-- If `--nginx-conf` is given but the named `log_format` isn't found in it
-  (or anything it includes), gonginxlog fails with an error instead of
-  silently falling back to the built-in default — pass the right
-  `--format-name` for your config.
+- `--nginx-conf` читается вместе со всем, что он `include`-ит (глобы и
+  рекурсия) — так что `log_format`, объявленный в `conf.d/*.conf` или
+  `sites-enabled/*`, тоже находится.
+- `--format-name` выбирает, какую директиву `log_format <имя> ...;`
+  использовать, если в конфиге их несколько.
+- Поддерживаются и `escape=json` форматы (парсятся как настоящий JSON,
+  порядок ключей не важен), и обычные текстовые форматы (в духе
+  `combined`, компилируются в regex с именованными группами из
+  `$variable`-токенов).
+- Поля сопоставляются внутри по имени nginx-**переменной**, а не по
+  тому, какой JSON-ключ вы выбрали — `"x-request-id":"$request_id"`
+  всё равно распознаётся как `request_id`. Именно это позволяет
+  фильтрам и отчёту работать независимо от кастомных имён JSON-ключей.
+- Если `--nginx-conf` указан, но нужный `log_format` в нём (или во всех
+  его include) не найден — gonginxlog завершится с ошибкой, а не тихо
+  подставит встроенный дефолт. Укажите правильный `--format-name`.
 
-## Filters
+## Фильтры
 
-| Flag | Meaning | Examples |
+| Флаг | Что делает | Примеры |
 |---|---|---|
-| `--since` | keep entries at/after this time | `--since 2026-08-12T10:00:00Z`, `--since "12/Aug/2026:10:00:00 +0000"` |
-| `--until` | keep entries strictly before this time | `--until 2026-08-12T12:00:00Z` |
-| `--last` | keep entries from the last duration (overrides `--since`) | `--last 1h30m` |
-| `--status` | status filter: exact / class / range, comma-combinable | `--status 404,500-599,3xx` |
-| `--ip` | client IP filter: exact / CIDR, comma-combinable | `--ip 203.0.113.5,10.0.0.0/8` |
-| `--country` | country code filter, comma-combinable (see below) | `--country RU,US` |
-| `--grep` | regexp against the whole raw line | `--grep 'wp-admin'` |
-| `--field` | regexp against one named field, repeatable (ANDed) | `--field http_user_agent=bot` `--field host=example\.com` |
+| `--since` | оставить записи от этого момента и позже | `--since 2026-08-12T10:00:00Z`, `--since "12/Aug/2026:10:00:00 +0000"` |
+| `--until` | оставить записи строго до этого момента | `--until 2026-08-12T12:00:00Z` |
+| `--last` | записи за последний интервал (перекрывает `--since`) | `--last 1h30m` |
+| `--status` | фильтр по статусу: точный код / класс / диапазон, через запятую | `--status 404,500-599,3xx` |
+| `--ip` | фильтр по IP клиента: точный / CIDR, через запятую | `--ip 203.0.113.5,10.0.0.0/8` |
+| `--country` | фильтр по коду страны, через запятую (см. ниже) | `--country RU,US` |
+| `--grep` | regex по всей сырой строке лога | `--grep 'wp-admin'` |
+| `--field` | regex по одному полю, можно повторять (объединяются через AND) | `--field http_user_agent=bot` `--field host=example\.com` |
 
-Field names for `--field` are nginx variable names (`remote_addr`,
-`status`, `request`, `http_user_agent`, `http_referer`, `host`, ...), the
-same names the report and filters use internally.
+Имена полей для `--field` — это имена nginx-переменных (`remote_addr`,
+`status`, `request`, `http_user_agent`, `http_referer`, `host`, ...) —
+те же имена, что использует отчёт и все остальные фильтры внутри.
 
-`--since`/`--until` accept RFC3339 or nginx's own `time_local` layout
-(`02/Jan/2006:15:04:05 -0700`).
+`--since`/`--until` принимают RFC3339 либо собственный формат nginx
+`time_local` (`02/Jan/2006:15:04:05 -0700`).
 
-`--country` matches `$geoip_country_code` (legacy `ngx_http_geoip_module`)
-or `$geoip2_data_country_code` (`ngx_http_geoip2_module`), whichever your
-log_format has. It only works — and the report's "Top countries" table
-only appears — if the log_format carries one of those fields.
+`--country` матчится по `$geoip_country_code` (старый
+`ngx_http_geoip_module`) или `$geoip2_data_country_code`
+(`ngx_http_geoip2_module`) — что найдётся в вашем log_format. Работает
+(и таблица "Top countries" в отчёте появляется) только если один из
+этих полей реально есть в формате.
 
-## Output
+## Вывод
 
-By default gonginxlog prints an aggregated report:
+По умолчанию gonginxlog печатает агрегированный отчёт:
 
-- status code distribution
-- top client IPs, countries, requested paths, user agents, referers
-  (`--top N` rows each, default 10; the countries table only shows up
-  when the log_format has `$geoip_country_code` or
-  `$geoip2_data_country_code` — requests with no resolved country are
-  counted under `-`)
-- request time / upstream response time percentiles (avg, p50, p90, p99, max)
-- total bytes sent
-- a requests-over-time histogram (`--bucket`; default `auto` picks a
-  bucket size — 1m/5m/15m/30m/1h/3h/6h/12h/24h — from the data's actual
-  time span so it stays readable; pass e.g. `--bucket 30m` to force one,
-  or `--bucket 0` to disable it)
+- распределение по кодам статуса
+- топ клиентских IP, стран, запрошенных путей, User-Agent, referer'ов
+  (`--top N` строк для каждого, по умолчанию 10; таблица стран
+  появляется только если в log_format есть `$geoip_country_code` или
+  `$geoip2_data_country_code` — запросы без определённой страны
+  считаются в строке `-`)
+- перцентили request_time / upstream_response_time (avg, p50, p90, p99, max)
+- суммарный объём переданных байт
+- гистограмма запросов по времени (`--bucket`; по умолчанию `auto` сам
+  подбирает размер бакета — 1m/5m/15m/30m/1h/3h/6h/12h/24h — по
+  реальному временному диапазону данных, чтобы график оставался
+  читаемым; можно задать явно, например `--bucket 30m`, или отключить
+  через `--bucket 0`)
 
-Flags controlling what's printed:
+Флаги, управляющие тем, что печатается:
 
 ```sh
-gonginxlog access.log                       # report only (default)
-gonginxlog --lines access.log               # report + matching raw lines
-gonginxlog --lines --report=false access.log  # matching raw lines only, like grep
-gonginxlog --json access.log                # report as JSON instead of text tables
+gonginxlog access.log                       # только отчёт (по умолчанию)
+gonginxlog --lines access.log               # отчёт + совпавшие сырые строки
+gonginxlog --lines --report=false access.log  # только совпавшие строки, как grep
+gonginxlog --json access.log                # отчёт в виде JSON вместо текстовых таблиц
 ```
 
-## Live TUI dashboard (`--ui`)
+## Live TUI-дашборд (`--ui`)
 
 ```sh
 gonginxlog --ui /var/log/nginx/access.log
-gonginxlog --status 5xx --ui --ui-buffer 20000 /var/log/nginx/access.log  # startup filters still apply
+
+# стартовые фильтры продолжают действовать и внутри дашборда
+gonginxlog --status 5xx --ui --ui-buffer 20000 /var/log/nginx/access.log
+
+# сразу открыть дашборд только по одной стране
+gonginxlog --country RU --ui /var/log/nginx/access.log
 ```
 
-A k9s-styled dashboard: one full-screen table at a time, switched with a
-hotkey, refreshed once a second. Requires exactly one real file (same
-restriction as `-f`). On launch it batch-reads the file's existing
-content first so it isn't empty, then keeps tailing live.
+Дашборд в стиле k9s: одна полноэкранная таблица за раз, переключение по
+хоткею, обновление раз в секунду. Требует ровно один реальный файл (как
+и `-f`). При запуске сначала читает уже существующее содержимое файла
+батчем (чтобы дашборд не был пустым), затем переходит в живой тайлинг.
 
-Hotkeys: `1` status · `2` ips · `3` countries (only if the log_format
-has geoip) · `4` paths · `5` agents · `6` referers · `7` timeline ·
-`l` raw (live matching lines) · `a` alerts · `/` filter · `x` clear
-filter · `Enter` drill down into the selected row · `Esc` back/close ·
-`q` quit · `j`/`k` also work as up/down.
+Хоткеи: `1` status · `2` ips · `3` countries (только если в log_format
+есть geoip) · `4` paths · `5` agents · `6` referers · `7` timeline ·
+`l` raw (живые совпавшие строки) · `a` alerts · `/` фильтр · `x` сброс
+фильтра · `Enter` drill-down по выбранной строке · `Esc` назад/закрыть ·
+`q` выход · `j`/`k` работают как стрелки вниз/вверх.
 
-**In-view filter (`/`)** uses the same mini-language everywhere,
-space-separated tokens ANDed together: `status:5xx`, `ip:203.0.113.5`,
-`country:RU,US`, `grep:<regexp>` (whole line), or `<field>=<regexp>`
-(one field, like `--field`). It's layered on top of whatever `--status`/
-`--ip`/etc. were passed at startup. Applying or clearing (`x`) it
-re-scans the file, so it can take a moment on a very large log.
+**Фильтр внутри дашборда (`/`)** использует тот же мини-язык везде,
+токены через пробел объединяются через AND: `status:5xx`,
+`ip:203.0.113.5`, `country:RU,US`, `grep:<regex>` (по всей строке), или
+`<поле>=<regex>` (одно поле, как `--field`). Накладывается поверх того,
+что было передано флагами при старте. Применение или сброс (`x`)
+пересканирует файл, поэтому на очень большом логе может занять момент.
 
-**Drill down (`Enter`)** on any row shows that IP/path/country/status/
-agent/referer's status-code breakdown and its top related paths or IPs,
-computed from the last `--ui-buffer` requests (default 10000) — not the
-whole file's history, which is why very old activity can drop out of a
-drill-down on a long-running session even though it's still counted in
-the totals.
+Примеры фильтров прямо в дашборде:
 
-**Alerts (`a`)** shows anomalies from three fixed-threshold detectors:
-one IP generating ≥30% of traffic in the last 60s, one IP touching ≥20
-distinct paths in the last 10s (scanning), and one path getting hit from
-≥15 distinct IPs in the last 10s (distributed hammering). The header
-shows a `⚠ N alert(s)` badge while any are active.
+```
+/status:404,500-599
+/ip:66.181.42.0/24
+/country:RU grep:wp-admin
+/http_user_agent=(?i)bot
+```
+
+**Drill-down (`Enter`)** на любой строке показывает разбивку по кодам
+статуса и топ связанных путей/IP для этого IP/пути/страны/статуса/
+UA/referer'а, посчитанные по последним `--ui-buffer` запросам (по
+умолчанию 10000) — не по всей истории файла, поэтому на долгой сессии
+очень старая активность может "выпасть" из drill-down, хотя в общих
+счётчиках она всё ещё учтена.
+
+**Alerts (`a`)** показывает аномалии от трёх детекторов с фиксированными
+порогами: один IP генерирует ≥30% трафика за последние 60с (флуд), один
+IP касается ≥20 разных путей за последние 10с (скан), один путь
+получает запросы от ≥15 разных IP за последние 10с (распределённый
+перебор). В хедере показывается бейдж `⚠ N alert(s)`, когда есть
+активные алерты.
 
 ## Docker
 
-A small (~6MB) static image is published on every push to `main` and on
-every version tag, to both registries. `--ui` needs a real terminal
+Маленький (~6МБ) статический образ публикуется при каждом push в `main`
+и на каждый тег версии, в оба реестра. `--ui` нужен настоящий терминал
 (`docker run -it`):
 
 ```sh
@@ -191,29 +259,41 @@ docker pull ghcr.io/north21/gonginxlog:latest
 docker pull <dockerhub-user>/gonginxlog:latest
 ```
 
-Run it against a log on your host by mounting it in:
+Запуск на лог с хоста через volume:
 
 ```sh
 docker run --rm -v /var/log/nginx:/logs:ro \
   ghcr.io/north21/gonginxlog:latest --status 5xx /logs/access.log
+
+# live-дашборд в контейнере (нужен -it для терминала)
+docker run --rm -it -v /var/log/nginx:/logs:ro \
+  ghcr.io/north21/gonginxlog:latest --ui /logs/access.log
 ```
 
-Tags: `latest` (tracks `main`), `vX.Y.Z` / `X.Y` (from release tags), and
-`sha-<short-sha>`.
+Теги: `latest` (следует за `main`), `vX.Y.Z` / `X.Y` (из релизных
+тегов), и `sha-<short-sha>`.
 
-## Releases
+## Релизы
 
-Every `vX.Y.Z` tag also builds standalone binaries (linux/darwin/windows,
-amd64/arm64) and publishes them as a GitHub Release, with a
-`checksums.txt`. Grab one from the repo's Releases page and run it — no
-Go toolchain or Docker needed.
+Каждый тег `vX.Y.Z` также собирает автономные бинарники
+(linux/darwin/windows, amd64/arm64) и публикует их как GitHub Release, с
+`checksums.txt`. Скачайте нужный со страницы Releases и запускайте — не
+нужен ни Go, ни Docker.
+
+```sh
+curl -LO https://github.com/north21/gonginxlog/releases/download/v0.2.0/gonginxlog_0.2.0_linux_amd64.tar.gz
+tar -xzf gonginxlog_0.2.0_linux_amd64.tar.gz
+./gonginxlog --version
+```
 
 ## Roadmap
 
-Not implemented yet:
+Пока не реализовано:
 
-- Multi-file tailing in `--ui` (currently exactly one file, like `-f`).
-- Configurable anomaly thresholds (currently fixed, see above).
-- Interactive TUI browsing of a static (non-live) file.
+- Тайлинг нескольких файлов в `--ui` (сейчас ровно один файл, как `-f`).
+- Настраиваемые пороги для детекции аномалий (сейчас фиксированные, см. выше).
+- Интерактивный просмотр в TUI статичного (не live) файла.
 
-See `DESIGN.md` for the fuller design rationale and package layout.
+Подробное обоснование архитектурных решений и структура пакетов — в
+`DESIGN.md` (на английском, для контрибьюторов). Краткая ориентация для
+Claude Code при работе в этом репозитории — в `CLAUDE.md`.
