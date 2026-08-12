@@ -91,9 +91,9 @@ explicit user instruction, not a suggestion.
   `flag.Parse`, so flags can be given before or after the file paths. A
   lone `-` is always treated as positional (the stdin marker), never as
   a flag.
-- Validated end-to-end against a real production log
-  (`tests/example.com_access.log`, 430MB / 208k lines, real
-  `main_json` format): all lines parsed with zero `log_format` mismatches,
+- Validated end-to-end against a real production log (430MB / 208k
+  lines, dropped in locally under `tests/`, real `main_json` format):
+  all lines parsed with zero `log_format` mismatches,
   filters/report/`--json`/gzip/stdin/multi-file/`-f` all exercised. Real
   logs like this are large and not meant for git — see `.gitignore`
   (`/tests/*.log*`, `/tests/*.gz`).
