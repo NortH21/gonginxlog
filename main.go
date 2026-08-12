@@ -23,6 +23,16 @@ import (
 	"github.com/north21/gonginxlog/internal/stats"
 )
 
+// version, commit, date and builtBy are set at build time via -ldflags
+// "-X main.xxx=...", matching goreleaser's default ldflags so a release
+// build's --version output is meaningful without extra config.
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+	builtBy = "unknown"
+)
+
 // valueFlagNames lists every flag (without leading dashes) that consumes a
 // following token as its value, so reorderArgs can tell a flag's value
 // apart from a positional file argument.
@@ -93,8 +103,9 @@ func main() {
 		linesFlag      = flag.Bool("lines", false, "print matching raw lines (like grep)")
 		reportFlag     = flag.Bool("report", true, "print the aggregated report")
 		topFlag        = flag.Int("top", 10, "number of rows to show in each top-N table")
-		bucketFlag     = flag.String("bucket", "5m", "time bucket size for the requests-over-time histogram (0 disables it)")
+		bucketFlag     = flag.String("bucket", "auto", "time bucket size for the requests-over-time histogram: a duration (e.g. 30m), \"auto\" (pick from the data's time span), or 0 to disable")
 		followFlag     = flag.Bool("f", false, "follow a single log file for new lines (tail -f); prints matching lines only")
+		versionFlag    = flag.Bool("version", false, "print the version and exit")
 	)
 	var fields fieldFlags
 	flag.Var(&fields, "field", "field=regexp filter on one named field, repeatable (e.g. --field http_user_agent=bot)")
@@ -121,9 +132,14 @@ Flags:
 		os.Exit(2)
 	}
 
+	if *versionFlag {
+		fmt.Printf("gonginxlog %s (commit %s, built %s by %s)\n", version, commit, date, builtBy)
+		return
+	}
+
 	files := flag.Args()
 	if len(files) == 0 {
-		fmt.Fprintln(os.Stderr, "error: no input files given (use '-' to read from stdin)")
+		fmt.Fprintln(os.Stderr, colorize(ansiRed, "error:")+" no input files given (use '-' to read from stdin)")
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -142,7 +158,7 @@ Flags:
 		fatalf("%v", err)
 	}
 
-	bucketDur, err := time.ParseDuration(*bucketFlag)
+	bucket, err := parseBucket(*bucketFlag)
 	if err != nil {
 		fatalf("invalid --bucket %q: %v", *bucketFlag, err)
 	}
@@ -155,7 +171,21 @@ Flags:
 		return
 	}
 
-	runBatch(files, p, filters, stats.NewAggregator(*topFlag, bucketDur), *linesFlag, *reportFlag, *jsonFlag)
+	runBatch(files, p, filters, stats.NewAggregator(*topFlag, bucket), *linesFlag, *reportFlag, *jsonFlag)
+}
+
+func parseBucket(spec string) (stats.Bucket, error) {
+	if spec == "auto" {
+		return stats.AutoBucket, nil
+	}
+	d, err := time.ParseDuration(spec)
+	if err != nil {
+		return stats.Bucket{}, err
+	}
+	if d <= 0 {
+		return stats.DisabledBucket, nil
+	}
+	return stats.FixedBucket(d), nil
 }
 
 func loadFormatSpec(nginxConfPath, formatName string) (*format.Spec, error) {
@@ -286,7 +316,7 @@ func runBatch(files []string, p parser.Parser, filters filter.And, agg *stats.Ag
 	}
 
 	if parseErrors > 0 {
-		fmt.Fprintf(os.Stderr, "warning: %d line(s) did not match the configured log_format and were skipped\n", parseErrors)
+		warnf("%d line(s) did not match the configured log_format and were skipped", parseErrors)
 	}
 }
 
@@ -310,9 +340,4 @@ func runFollow(path string, p parser.Parser, filters filter.And) {
 	if err != nil {
 		fatalf("%v", err)
 	}
-}
-
-func fatalf(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
-	os.Exit(1)
 }

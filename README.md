@@ -33,6 +33,10 @@ go build -o gonginxlog .
 Flags can be given before or after the file paths — `gonginxlog
 access.log --top 5` and `gonginxlog --top 5 access.log` both work.
 
+`gonginxlog --version` prints the build's version/commit/date. `error:`
+and `warning:` messages are colored (red/yellow) when stderr is a
+terminal; set `NO_COLOR=1` to turn that off.
+
 ## Input
 
 Positional arguments are one or more log files, read and concatenated in
@@ -77,6 +81,10 @@ gonginxlog --nginx-conf /etc/nginx/nginx.conf --format-name main_json access.log
   whatever JSON key you chose — `"x-request-id":"$request_id"` is still
   understood as `request_id`. This is what lets filters and the report
   work regardless of custom JSON key naming.
+- If `--nginx-conf` is given but the named `log_format` isn't found in it
+  (or anything it includes), gonginxlog fails with an error instead of
+  silently falling back to the built-in default — pass the right
+  `--format-name` for your config.
 
 ## Filters
 
@@ -105,7 +113,10 @@ By default gonginxlog prints an aggregated report:
 - top client IPs, requested paths, user agents, referers (`--top N` rows each, default 10)
 - request time / upstream response time percentiles (avg, p50, p90, p99, max)
 - total bytes sent
-- a requests-over-time histogram (`--bucket`, default `5m`; `--bucket 0` disables it)
+- a requests-over-time histogram (`--bucket`; default `auto` picks a
+  bucket size — 1m/5m/15m/30m/1h/3h/6h/12h/24h — from the data's actual
+  time span so it stays readable; pass e.g. `--bucket 30m` to force one,
+  or `--bucket 0` to disable it)
 
 Flags controlling what's printed:
 
@@ -115,6 +126,33 @@ gonginxlog --lines access.log               # report + matching raw lines
 gonginxlog --lines --report=false access.log  # matching raw lines only, like grep
 gonginxlog --json access.log                # report as JSON instead of text tables
 ```
+
+## Docker
+
+A small (~4MB) static image is published on every push to `main` and on
+every version tag, to both registries:
+
+```sh
+docker pull ghcr.io/north21/gonginxlog:latest
+docker pull <dockerhub-user>/gonginxlog:latest
+```
+
+Run it against a log on your host by mounting it in:
+
+```sh
+docker run --rm -v /var/log/nginx:/logs:ro \
+  ghcr.io/north21/gonginxlog:latest --status 5xx /logs/access.log
+```
+
+Tags: `latest` (tracks `main`), `vX.Y.Z` / `X.Y` (from release tags), and
+`sha-<short-sha>`.
+
+## Releases
+
+Every `vX.Y.Z` tag also builds standalone binaries (linux/darwin/windows,
+amd64/arm64) and publishes them as a GitHub Release, with a
+`checksums.txt`. Grab one from the repo's Releases page and run it — no
+Go toolchain or Docker needed.
 
 ## Roadmap
 
