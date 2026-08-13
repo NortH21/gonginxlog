@@ -33,6 +33,22 @@ type RouteTimingEntry struct {
 	AvgSeconds float64
 }
 
+// UpstreamEntry is one row of the "Upstreams" table: which backend
+// address, how many requests it got, its average response time (from
+// $upstream_response_time, last-attempt-only - see
+// Record.UpstreamResponseTimeLast), and how many of those got a
+// $upstream_status >= 500. Addr is the literal "-" for requests that
+// never reached an upstream at all (served from cache or a static
+// file) - AvgSeconds/ErrorCount are meaningless for that row (TimedCount
+// will be 0).
+type UpstreamEntry struct {
+	Addr       string
+	Count      int
+	AvgSeconds float64
+	TimedCount int
+	ErrorCount int
+}
+
 // Report is the fully aggregated view produced by Aggregator.Report.
 type Report struct {
 	TotalRequests int
@@ -60,4 +76,9 @@ type Report struct {
 	// Aggregator.SetPathLabeler) - route grouping is what keeps this
 	// bounded, so there is deliberately no raw-path fallback.
 	RouteTiming []RouteTimingEntry
+
+	// Upstreams is nil unless Aggregator.SetTrackUpstream(true) was
+	// called, which main.go only does when the log_format actually
+	// carries $upstream_addr.
+	Upstreams []UpstreamEntry
 }

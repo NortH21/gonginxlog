@@ -188,6 +188,7 @@ Flags:
 	}
 
 	trackCountry := specHasVariable(spec, "geoip_country_code") || specHasVariable(spec, "geoip2_data_country_code")
+	trackUpstream := specHasVariable(spec, "upstream_addr")
 
 	var routeRules routes.Rules
 	if *routesFileFlag != "" {
@@ -233,6 +234,7 @@ Flags:
 
 	agg := stats.NewAggregator(*topFlag, bucket, trackCountry)
 	agg.SetKeepPathQuery(*showPathArgsFlag)
+	agg.SetTrackUpstream(trackUpstream)
 	if labeler := routeLabeler(routeRules); labeler != nil {
 		agg.SetPathLabeler(labeler)
 	}

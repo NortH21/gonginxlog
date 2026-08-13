@@ -72,6 +72,15 @@ type Aggregator struct {
 	// deliberately match against query parameters.
 	keepPathQuery bool
 
+	// trackUpstream, set via SetTrackUpstream, enables the "Upstreams"
+	// table (Report().Upstreams). Off by default: not every log_format
+	// carries $upstream_addr, and unlike routes/paths this doesn't need
+	// a bounded-cardinality guard since upstream pools are expected to
+	// be small and stable (a handful of backend addresses) - see
+	// DESIGN.md.
+	trackUpstream  bool
+	upstreamCounts map[string]*upstreamAccum
+
 	requestTimes  []float64
 	upstreamTimes []float64
 	bytesTotal    int64
@@ -123,6 +132,15 @@ func (a *Aggregator) SetKeepPathQuery(keep bool) {
 	a.keepPathQuery = keep
 }
 
+// SetTrackUpstream enables the "Upstreams" table (see trackUpstream's
+// doc comment).
+func (a *Aggregator) SetTrackUpstream(track bool) {
+	a.trackUpstream = track
+	if track && a.upstreamCounts == nil {
+		a.upstreamCounts = map[string]*upstreamAccum{}
+	}
+}
+
 // Add folds one matched record into the running aggregates.
 func (a *Aggregator) Add(r *record.Record) {
 	a.total++
@@ -172,6 +190,25 @@ func (a *Aggregator) Add(r *record.Record) {
 	}
 	if ut, ok := r.UpstreamResponseTime(); ok {
 		a.upstreamTimes = append(a.upstreamTimes, ut)
+	}
+	if a.trackUpstream {
+		addr := r.UpstreamAddr()
+		if addr == "" {
+			addr = "-"
+		}
+		acc := a.upstreamCounts[addr]
+		if acc == nil {
+			acc = &upstreamAccum{}
+			a.upstreamCounts[addr] = acc
+		}
+		acc.count++
+		if code, ok := r.UpstreamStatus(); ok && code >= 500 {
+			acc.errorCount++
+		}
+		if ut, ok := r.UpstreamResponseTimeLast(); ok {
+			acc.timeSum += ut
+			acc.timeN++
+		}
 	}
 	bytesSent, hasBytes := r.BytesSent()
 	if hasBytes {
@@ -225,6 +262,9 @@ func (a *Aggregator) Report() *Report {
 	}
 	if a.pathLabeler != nil {
 		rep.RouteTiming = routeTimingEntries(a.routeTimings)
+	}
+	if a.trackUpstream {
+		rep.Upstreams = upstreamEntries(a.upstreamCounts)
 	}
 	return rep
 }

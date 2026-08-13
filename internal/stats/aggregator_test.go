@@ -140,3 +140,101 @@ func TestPathLabelerBoundsRouteTimingMemory(t *testing.T) {
 		t.Fatalf("expected route timing counts to sum to 10000, got %d", total)
 	}
 }
+
+func upstreamRec(addr, status, upstreamTime string) *record.Record {
+	return &record.Record{Fields: map[string]string{
+		"request":                "GET /foo HTTP/1.1",
+		"status":                 "200",
+		"upstream_addr":          addr,
+		"upstream_status":        status,
+		"upstream_response_time": upstreamTime,
+	}}
+}
+
+func TestNoTrackUpstreamLeavesUpstreamsNil(t *testing.T) {
+	a := NewAggregator(0, DisabledBucket, false)
+	a.Add(upstreamRec("10.0.0.1:8080", "200", "0.05"))
+	rep := a.Report()
+	if rep.Upstreams != nil {
+		t.Fatalf("expected Upstreams to stay nil without SetTrackUpstream, got %+v", rep.Upstreams)
+	}
+}
+
+func TestTrackUpstreamAggregatesCountAvgAndErrorRate(t *testing.T) {
+	a := NewAggregator(0, DisabledBucket, false)
+	a.SetTrackUpstream(true)
+
+	a.Add(upstreamRec("10.0.0.1:8080", "200", "0.100"))
+	a.Add(upstreamRec("10.0.0.1:8080", "200", "0.200"))
+	a.Add(upstreamRec("10.0.0.1:8080", "500", "0.300"))
+	a.Add(upstreamRec("10.0.0.2:8080", "200", "0.010"))
+
+	rep := a.Report()
+	if len(rep.Upstreams) != 2 {
+		t.Fatalf("expected 2 upstream entries, got %+v", rep.Upstreams)
+	}
+	// Busiest first: 10.0.0.1:8080 has 3 requests, 10.0.0.2:8080 has 1.
+	first := rep.Upstreams[0]
+	if first.Addr != "10.0.0.1:8080" || first.Count != 3 {
+		t.Fatalf("expected {10.0.0.1:8080 count=3} first, got %+v", first)
+	}
+	if got := first.AvgSeconds; got < 0.199 || got > 0.201 {
+		t.Fatalf("expected avg ~0.200 ((0.1+0.2+0.3)/3), got %v", got)
+	}
+	if first.ErrorCount != 1 {
+		t.Fatalf("expected 1 error (the 500), got %d", first.ErrorCount)
+	}
+
+	second := rep.Upstreams[1]
+	if second.Addr != "10.0.0.2:8080" || second.Count != 1 || second.ErrorCount != 0 {
+		t.Fatalf("expected {10.0.0.2:8080 count=1 errors=0}, got %+v", second)
+	}
+}
+
+func TestTrackUpstreamUsesLastValueOnRetry(t *testing.T) {
+	a := NewAggregator(0, DisabledBucket, false)
+	a.SetTrackUpstream(true)
+	// nginx retried from .1 (which 502'd) to .2 (which answered 200) -
+	// the request should be attributed to .2, the one that actually
+	// answered, not both and not the first attempt.
+	a.Add(upstreamRec("10.0.0.1:8080, 10.0.0.2:8080", "502, 200", "0.050, 0.020"))
+
+	rep := a.Report()
+	if len(rep.Upstreams) != 1 {
+		t.Fatalf("expected exactly 1 upstream entry (attributed to the last attempt), got %+v", rep.Upstreams)
+	}
+	e := rep.Upstreams[0]
+	if e.Addr != "10.0.0.2:8080" {
+		t.Fatalf("expected attribution to 10.0.0.2:8080 (the one that answered), got %q", e.Addr)
+	}
+	if e.ErrorCount != 0 {
+		t.Fatalf("expected 0 errors (the final status was 200, not the earlier 502), got %d", e.ErrorCount)
+	}
+	if e.AvgSeconds < 0.019 || e.AvgSeconds > 0.021 {
+		t.Fatalf("expected avg ~0.020 (last attempt's own time, not the 0.070 sum), got %v", e.AvgSeconds)
+	}
+}
+
+func TestTrackUpstreamNoUpstreamGetsDashBucket(t *testing.T) {
+	a := NewAggregator(0, DisabledBucket, false)
+	a.SetTrackUpstream(true)
+	a.Add(upstreamRec("-", "-", "-"))
+	a.Add(upstreamRec("10.0.0.1:8080", "200", "0.05"))
+
+	rep := a.Report()
+	if len(rep.Upstreams) != 2 {
+		t.Fatalf("expected 2 entries (one real upstream, one \"-\"), got %+v", rep.Upstreams)
+	}
+	found := false
+	for _, e := range rep.Upstreams {
+		if e.Addr == "-" {
+			found = true
+			if e.Count != 1 || e.TimedCount != 0 || e.ErrorCount != 0 {
+				t.Fatalf("expected the \"-\" row to have count=1, no timing, no errors, got %+v", e)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a \"-\" entry for the no-upstream request, got %+v", rep.Upstreams)
+	}
+}

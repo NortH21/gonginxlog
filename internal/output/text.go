@@ -43,6 +43,7 @@ func WriteText(w io.Writer, rep *stats.Report, opts Options) {
 	}
 	writeTiming(w, "Request time (s)", rep.RequestTiming)
 	writeTiming(w, "Upstream response time (s)", rep.UpstreamTiming)
+	writeUpstreams(w, rep.Upstreams, rep.TotalRequests)
 	if rep.BytesSentTotal > 0 {
 		fmt.Fprintf(w, "Bytes sent total: %s\n\n", humanBytes(rep.BytesSentTotal))
 	}
@@ -132,6 +133,37 @@ func writeRouteTiming(w io.Writer, entries []stats.RouteTimingEntry) {
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	for i, e := range entries {
 		fmt.Fprintf(tw, "  %2d.\t%s\tavg=%.3fs\tn=%d\n", i+1, term.Sanitize(e.Route), e.AvgSeconds, e.Count)
+	}
+	tw.Flush()
+	fmt.Fprintln(w)
+}
+
+// writeUpstreams prints one row per backend address ($upstream_addr,
+// last-attempt-only - see Record.UpstreamAddr), plus a "-" row for
+// requests that never reached an upstream (cache/static). Addr comes
+// from nginx's own config, not client-controlled request data, so
+// unlike the path/UA/referer tables it doesn't need term.Sanitize.
+func writeUpstreams(w io.Writer, entries []stats.UpstreamEntry, total int) {
+	if len(entries) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Upstreams")
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "  #\tADDR\tREQS\t%\tAVG\tERR%")
+	for i, e := range entries {
+		addr := e.Addr
+		avg, errRate := "-", "-"
+		if addr == "-" {
+			addr = "- (no upstream)"
+		} else {
+			if e.TimedCount > 0 {
+				avg = fmt.Sprintf("%.3fs", e.AvgSeconds)
+			}
+			if e.Count > 0 {
+				errRate = fmt.Sprintf("%.1f%%", 100*float64(e.ErrorCount)/float64(e.Count))
+			}
+		}
+		fmt.Fprintf(tw, "  %2d.\t%s\t%d\t%s\t%s\t%s\n", i+1, addr, e.Count, percentOf(e.Count, total), avg, errRate)
 	}
 	tw.Flush()
 	fmt.Fprintln(w)

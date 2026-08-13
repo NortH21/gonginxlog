@@ -104,3 +104,34 @@ func TestWriteTextSanitizesControlBytesInFields(t *testing.T) {
 		t.Fatalf("expected the sanitized route label in the output, got:\n%s", out)
 	}
 }
+
+func TestWriteTextUpstreamsSection(t *testing.T) {
+	rep := sampleReport()
+	rep.Upstreams = []stats.UpstreamEntry{
+		{Addr: "10.0.0.1:8080", Count: 8, AvgSeconds: 0.042, TimedCount: 8, ErrorCount: 1},
+		{Addr: "-", Count: 2, TimedCount: 0, ErrorCount: 0},
+	}
+	var buf bytes.Buffer
+	WriteText(&buf, rep, Options{})
+	out := buf.String()
+	if !strings.Contains(out, "Upstreams") {
+		t.Fatalf("expected an 'Upstreams' section when Upstreams is set, got:\n%s", out)
+	}
+	if !strings.Contains(out, "10.0.0.1:8080") {
+		t.Fatalf("expected the upstream address in the output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "12.5%") {
+		t.Fatalf("expected the 1/8 error rate (12.5%%) in the output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "no upstream") {
+		t.Fatalf("expected the \"-\" row to be labeled as no upstream, got:\n%s", out)
+	}
+}
+
+func TestWriteTextNoUpstreamsSectionWhenNil(t *testing.T) {
+	var buf bytes.Buffer
+	WriteText(&buf, sampleReport(), Options{})
+	if strings.Contains(buf.String(), "Upstreams") {
+		t.Fatalf("expected no 'Upstreams' section when Upstreams is nil")
+	}
+}

@@ -146,6 +146,63 @@ func (r *Record) UpstreamResponseTime() (float64, bool) {
 	return sum, any
 }
 
+// UpstreamAddr returns $upstream_addr - the address that actually
+// answered, when nginx tried multiple upstreams for one request (a
+// retry produces a comma-separated list; the last entry is the one
+// whose response the client received). Returns "" when there was no
+// upstream at all (served from cache or a static file).
+func (r *Record) UpstreamAddr() string {
+	return lastCommaValue(r.Get("upstream_addr"))
+}
+
+// UpstreamStatus parses $upstream_status the same way: the last
+// comma-separated value, i.e. the status code the upstream side
+// actually returned for the response the client got (nginx's own
+// $status can differ, e.g. when nginx maps a 502 to a custom error
+// page).
+func (r *Record) UpstreamStatus() (int, bool) {
+	v := lastCommaValue(r.Get("upstream_status"))
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// UpstreamResponseTimeLast returns just the last upstream's own
+// response time - as opposed to UpstreamResponseTime's sum across
+// every retry - so a per-upstream average isn't diluted by time spent
+// waiting on a *different* upstream earlier in the same request.
+func (r *Record) UpstreamResponseTimeLast() (float64, bool) {
+	v := lastCommaValue(r.Get("upstream_response_time"))
+	if v == "" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+// lastCommaValue returns the last comma-separated, trimmed entry of v
+// (nginx's convention for multi-upstream fields on a retried request),
+// normalizing an empty or "-" result to "".
+func lastCommaValue(v string) string {
+	if v == "" {
+		return ""
+	}
+	parts := strings.Split(v, ",")
+	last := strings.TrimSpace(parts[len(parts)-1])
+	if last == "-" {
+		return ""
+	}
+	return last
+}
+
 // BytesSent returns $bytes_sent, falling back to $body_bytes_sent.
 func (r *Record) BytesSent() (int64, bool) {
 	for _, variable := range []string{"bytes_sent", "body_bytes_sent"} {

@@ -733,10 +733,79 @@ query parameters, so this default must never mutate what reaches it.
   path regardless), `internal/tui` (drill-down matching and the PATH
   breakdown column, both trimmed-by-default and kept-when-configured).
 
+## Upstreams table (2026-08-13)
+
+The default log_format already carries `$upstream_addr`,
+`$upstream_status`, and `$upstream_cache_status`, but until now nothing
+read them - only `$upstream_response_time` was aggregated, and only as
+one global timing pool with no per-backend breakdown. Q&A on 2026-08-13
+(the user explicitly asked for a heavily-question-driven design pass)
+settled the shape:
+
+- **Signals**: where traffic goes (per-upstream request count), how
+  fast it answers (per-upstream avg `request_time`), what it returns
+  (per-upstream error rate). `$upstream_cache_status` was explicitly
+  *not* requested - not implemented.
+- **Multi-upstream requests** (nginx retries produce a comma-separated
+  list for `$upstream_addr`/`$upstream_status`/`$upstream_response_time`
+  on one request): attribute the whole request to the **last** entry -
+  the upstream that actually produced the response the client got -
+  not the sum (that's what the existing global
+  `$upstream_response_time` aggregate already does, deliberately left
+  unchanged) and not every attempt. `Record.UpstreamAddr()` /
+  `UpstreamStatus()` / `UpstreamResponseTimeLast()` are new accessors
+  built on a shared `lastCommaValue` helper; `UpstreamResponseTimeLast`
+  is deliberately a separate method from the pre-existing
+  `UpstreamResponseTime` (which sums) rather than a behavior change to
+  it, since both meanings are legitimate and used in different places.
+- **Cardinality**: the user confirmed upstream pools are expected to be
+  a small, stable set of backend addresses - unlike raw paths/IPs, this
+  doesn't need routes-style bounded-label grouping or a `--top` cutoff.
+  `internal/stats/upstream.go`'s `upstreamAccum` is the same
+  O(1)-per-key running-average design as `routeTimingAccum`
+  (`stats.Aggregator.SetTrackUpstream`, additive setter, same pattern
+  as `SetPathLabeler`/`SetKeepPathQuery` - off by default, zero cost
+  for callers that don't opt in).
+- **No-upstream requests** (`$upstream_addr == "-"`, e.g. served from
+  cache or a static file) get an explicit `"-"` row in the table
+  (`Count` populated, `AvgSeconds`/`ErrorCount` meaningless -
+  `TimedCount == 0` signals that to the renderer) rather than being
+  silently excluded, the same "-" convention already used for
+  unresolved `country`.
+- **Format**: one combined table (`internal/output/text.go`'s
+  `writeUpstreams`) - addr / request count / % / avg time / error rate
+  in one row per backend, sorted busiest-first (like Top IPs/paths, not
+  slowest-first like the routes table - this answers "where does
+  traffic go" primarily). "Error" is defined as `$upstream_status >=
+  500` (a backend-health signal); a `$upstream_status` in the 4xx range
+  is app-level behavior forwarded through nginx, not counted as an
+  upstream error.
+- **Visibility**: auto-shown only when the log_format carries
+  `$upstream_addr` (`specHasVariable` in `main.go`, same mechanism as
+  `trackCountry`), not gated behind an opt-in flag like
+  `--show-agents`/`--show-referers` - unlike those, there's no reason
+  to hide it when the data exists.
+- **Scope: batch report only, not `--ui`**, by explicit choice in the
+  Q&A - `stats.Aggregator.SetTrackUpstream` is only called from
+  `main.go`'s batch path, never from `internal/tui`'s `scanFile` or
+  `buildDetailPage`. No `--ui` view, no drill-down dimension, no new
+  filter flag were added. Revisit if/when there's a concrete `--ui` ask
+  for this (see Deferred, below).
+- `Addr` is nginx's own config-determined backend address, not
+  client-controlled request data, so - unlike the path/UA/referer
+  tables - it's rendered without `term.Sanitize`.
+- Tests at every layer: `internal/record` (last-value semantics for all
+  three new accessors, "-"/absent handling), `internal/stats`
+  (aggregation math, retry attribution, the "-" bucket, nil when
+  `SetTrackUpstream` isn't called), `internal/output` (the rendered
+  section, including the "-" row's dashes for the meaningless columns).
+
 ## Deferred (explicitly, not forgotten)
 
 - Live tailing of **multiple** files in `--ui` (static multi-file
   browsing now works; live is still exactly one file).
+- Upstreams in `--ui` (a view and/or drill-down dimension) - batch-only
+  for now, see "Upstreams table" above.
 
 ## Idea: log-based Prometheus exporter (discussed 2026-08-12, not started)
 
