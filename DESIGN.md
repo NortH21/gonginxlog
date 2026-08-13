@@ -785,12 +785,13 @@ settled the shape:
   `trackCountry`), not gated behind an opt-in flag like
   `--show-agents`/`--show-referers` - unlike those, there's no reason
   to hide it when the data exists.
-- **Scope: batch report only, not `--ui`**, by explicit choice in the
-  Q&A - `stats.Aggregator.SetTrackUpstream` is only called from
-  `main.go`'s batch path, never from `internal/tui`'s `scanFile` or
-  `buildDetailPage`. No `--ui` view, no drill-down dimension, no new
-  filter flag were added. Revisit if/when there's a concrete `--ui` ask
-  for this (see Deferred, below).
+- **Initial scope was batch report only**, by explicit choice in the
+  first Q&A round - `--ui` support was deliberately deferred rather
+  than guessed at. A follow-up Q&A the same day added it once the user
+  actually asked for it (see "Upstreams in `--ui`" below) - this two-step
+  sequence is the intended pattern: ship the narrower, explicitly-scoped
+  version first, extend it once there's a concrete ask, rather than
+  building the larger surface speculatively up front.
 - `Addr` is nginx's own config-determined backend address, not
   client-controlled request data, so - unlike the path/UA/referer
   tables - it's rendered without `term.Sanitize`.
@@ -800,12 +801,50 @@ settled the shape:
   `SetTrackUpstream` isn't called), `internal/output` (the rendered
   section, including the "-" row's dashes for the meaningless columns).
 
+### Upstreams in `--ui` (2026-08-13, same day follow-up)
+
+The user noticed the new table wasn't in `--ui` and asked for it,
+correctly recalling that the first round explicitly scoped it out
+rather than this being an oversight. A short follow-up Q&A settled the
+extension:
+
+- **Dedicated "upstreams" view**, hotkey `9` (the next free digit after
+  `8` for routes) - not a drill-down dimension, not an anomaly-alerts
+  integration (both were offered as options and declined).
+- **Live-updating like every other view** - no special-casing needed:
+  the live `Aggregator` already recomputes `Report()` (and therefore
+  `Report().Upstreams`) on every tick, the same way `routes`/`paths`/etc.
+  do, so wiring `Config.TrackUpstream` through to
+  `Aggregator.SetTrackUpstream` in `scanFile` was the entire cost.
+- `Config.TrackUpstream` is set from the same `specHasVariable`
+  auto-detection `main.go` already computes for the batch report - one
+  detection, two consumers, no separate `--ui`-only flag.
+- **No `SetSelectedFunc`/dimension wired** for this view, unlike every
+  other table view - `Enter` is left as the table's default row
+  navigation (same as `timeline`, which is a `TextView` and has no
+  concept of `Enter` at all). This isn't an oversight: the Q&A
+  explicitly declined drill-down for this view, and wiring a dimension
+  with no `matchesDimension` case would have produced a silently-empty
+  detail page instead of a clean "no-op."
+- `internal/tui/views.go`'s `renderUpstreamsTable` mirrors
+  `internal/output/text.go`'s `writeUpstreams` cell-for-cell (same "-"
+  no-upstream row, same last-attempt attribution) so the batch report
+  and the live view never tell a different story about the same log.
+  The 5xx-error-rate cell is colored red when non-zero (`tcell.ColorRed`)
+  to match the rest of the TUI's convention of coloring status-derived
+  numbers, not left as plain text like the batch report's (which has no
+  color story for numeric cells the way `--ui` does).
+- Tests: `TestBuildViewsRespectsTrackUpstream`/
+  `TestBuildViewsHideUpstreamsByDefault` (view-wiring regression, same
+  pattern as the `ShowAgents`/`ShowReferers` ones) and
+  `internal/tui/views_test.go`'s direct `renderUpstreamsTable` cell
+  assertions (new file - the package had no per-render-function unit
+  tests before this, only the app-level smoke tests).
+
 ## Deferred (explicitly, not forgotten)
 
 - Live tailing of **multiple** files in `--ui` (static multi-file
   browsing now works; live is still exactly one file).
-- Upstreams in `--ui` (a view and/or drill-down dimension) - batch-only
-  for now, see "Upstreams table" above.
 
 ## Idea: log-based Prometheus exporter (discussed 2026-08-12, not started)
 

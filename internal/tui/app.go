@@ -30,8 +30,12 @@ type Config struct {
 	Parser       parser.Parser
 	BaseFilters  filter.And // from CLI startup flags; always ANDed with the in-TUI filter
 	TrackCountry bool
-	ShowAgents   bool // include the "agents" view (off by default: usually not interesting)
-	ShowReferers bool // include the "referers" view (off by default)
+	// TrackUpstream enables the "upstreams" view - set from the same
+	// specHasVariable($upstream_addr) auto-detection main.go uses for
+	// the batch report's Upstreams table, no separate flag.
+	TrackUpstream bool
+	ShowAgents    bool // include the "agents" view (off by default: usually not interesting)
+	ShowReferers  bool // include the "referers" view (off by default)
 	// PathLabel, when set, groups paths into a bounded set of route
 	// labels (see internal/routes) - passed straight to
 	// stats.Aggregator.SetPathLabeler wherever this package builds one.
@@ -123,6 +127,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 func (a *App) scanFile(ctx context.Context, liveFilter filter.And) (*stats.Aggregator, *RingBuffer, *anomaly.Detector) {
 	agg := stats.NewAggregator(0, stats.AutoBucket, a.cfg.TrackCountry)
 	agg.SetKeepPathQuery(a.cfg.KeepPathQuery)
+	agg.SetTrackUpstream(a.cfg.TrackUpstream)
 	if a.cfg.PathLabel != nil {
 		agg.SetPathLabeler(a.cfg.PathLabel)
 	}
@@ -222,6 +227,17 @@ func (a *App) buildViews() []*viewDef {
 		routesView.primitive = routesView.table
 		routesView.table.SetSelectedFunc(func(row, col int) { a.onEnter(routesView, row) })
 		views = append(views, routesView)
+	}
+
+	if a.cfg.TrackUpstream {
+		// No dimension/SetSelectedFunc: drill-down wasn't requested for
+		// this view (upstream pools are small and stable - the table
+		// itself is already the whole picture), so Enter is left as
+		// the table's default row navigation, same as "timeline"/"raw".
+		upstreamsView := &viewDef{id: "upstreams", title: "upstreams", key: '9'}
+		upstreamsView.table = newCountTable()
+		upstreamsView.primitive = upstreamsView.table
+		views = append(views, upstreamsView)
 	}
 
 	raw := &viewDef{id: "raw", title: "raw", key: 'l'}
@@ -358,6 +374,8 @@ func (a *App) renderActiveView() {
 		renderCountTable(v, rep.TopPaths, rep.TotalRequests, "PATH")
 	case "routes":
 		renderRouteTimingTable(v, rep.RouteTiming, rep.TotalRequests)
+	case "upstreams":
+		renderUpstreamsTable(v, rep.Upstreams, rep.TotalRequests)
 	case "agents":
 		renderCountTable(v, rep.TopUserAgents, rep.TotalRequests, "USER AGENT")
 	case "referers":

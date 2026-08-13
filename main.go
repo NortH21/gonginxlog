@@ -213,6 +213,7 @@ Flags:
 		}
 		runUI(files, p, filters, uiOptions{
 			trackCountry:  trackCountry,
+			trackUpstream: trackUpstream,
 			bufferSize:    *uiBufferFlag,
 			anomaly:       anomalyThresholds,
 			live:          live,
@@ -431,6 +432,7 @@ func runBatch(files []string, p parser.Parser, filters filter.And, agg *stats.Ag
 // doesn't grow a parameter per flag.
 type uiOptions struct {
 	trackCountry  bool
+	trackUpstream bool
 	bufferSize    int
 	anomaly       anomaly.Thresholds
 	live          bool
@@ -451,6 +453,7 @@ func runUI(paths []string, p parser.Parser, filters filter.And, opts uiOptions) 
 		Parser:        p,
 		BaseFilters:   filters,
 		TrackCountry:  opts.trackCountry,
+		TrackUpstream: opts.trackUpstream,
 		BufferSize:    opts.bufferSize,
 		Refresh:       time.Second,
 		PollInterval:  500 * time.Millisecond,

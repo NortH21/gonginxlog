@@ -292,6 +292,52 @@ func TestBuildViewsHideAgentsReferersByDefault(t *testing.T) {
 	}
 }
 
+// TestBuildViewsRespectsTrackUpstream guards the "upstreams" view (and
+// its hotkey '9') actually appearing when Config.TrackUpstream is set -
+// same wiring-regression concern as ShowAgents/ShowReferers above.
+func TestBuildViewsRespectsTrackUpstream(t *testing.T) {
+	logPath := writeTempLog(t)
+	spec := format.Default()
+	p, err := parser.New(spec)
+	if err != nil {
+		t.Fatalf("parser.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	app := NewApp(ctx, Config{
+		Paths:         []string{logPath},
+		Live:          false,
+		Parser:        p,
+		TrackUpstream: true,
+	})
+
+	if !hasView(app, "upstreams", '9') {
+		t.Fatalf("expected an 'upstreams' view with hotkey '9' when TrackUpstream is true, got views %+v", viewIDs(app))
+	}
+}
+
+func TestBuildViewsHideUpstreamsByDefault(t *testing.T) {
+	logPath := writeTempLog(t)
+	spec := format.Default()
+	p, err := parser.New(spec)
+	if err != nil {
+		t.Fatalf("parser.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	app := NewApp(ctx, Config{
+		Paths:  []string{logPath},
+		Live:   false,
+		Parser: p,
+	})
+
+	if hasView(app, "upstreams", '9') {
+		t.Fatalf("expected no 'upstreams' view when TrackUpstream is false, got views %+v", viewIDs(app))
+	}
+}
+
 func hasView(app *App, id string, key rune) bool {
 	for _, v := range app.views {
 		if v.id == id {

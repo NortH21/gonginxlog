@@ -182,6 +182,54 @@ func renderRouteTimingTable(v *viewDef, entries []stats.RouteTimingEntry, total 
 	}
 }
 
+// renderUpstreamsTable renders the same per-backend breakdown as the
+// batch report's "Upstreams" section (see internal/output/text.go's
+// writeUpstreams) - busiest first, a "-" row for requests that never
+// reached an upstream at all. v.entries is populated for consistency
+// with the other CountEntry-backed views, but this view has no
+// dimension/SetSelectedFunc wired (no drill-down was requested for it).
+func renderUpstreamsTable(v *viewDef, entries []stats.UpstreamEntry, total int) {
+	countEntries := make([]stats.CountEntry, len(entries))
+	for i, e := range entries {
+		countEntries[i] = stats.CountEntry{Key: e.Addr, Count: e.Count}
+	}
+	v.entries = countEntries
+
+	t := v.table
+	t.Clear()
+	t.SetCell(0, 0, headerCell("#"))
+	t.SetCell(0, 1, headerCell("ADDR"))
+	t.SetCell(0, 2, headerCell("REQS"))
+	t.SetCell(0, 3, headerCell("%"))
+	t.SetCell(0, 4, headerCell("AVG"))
+	t.SetCell(0, 5, headerCell("ERR%"))
+	for i, e := range entries {
+		row := i + 1
+		addr := e.Addr
+		avg, errRate := "-", "-"
+		if addr == "-" {
+			addr = "- (no upstream)"
+		} else {
+			if e.TimedCount > 0 {
+				avg = fmt.Sprintf("%.3fs", e.AvgSeconds)
+			}
+			if e.Count > 0 {
+				errRate = fmt.Sprintf("%.1f%%", 100*float64(e.ErrorCount)/float64(e.Count))
+			}
+		}
+		errColor := tcell.ColorWhite
+		if e.Count > 0 && e.ErrorCount > 0 {
+			errColor = tcell.ColorRed
+		}
+		t.SetCell(row, 0, tview.NewTableCell(strconv.Itoa(row)))
+		t.SetCell(row, 1, tview.NewTableCell(safeCellText(truncate(addr, maxCellWidth))))
+		t.SetCell(row, 2, tview.NewTableCell(strconv.Itoa(e.Count)).SetAlign(tview.AlignRight))
+		t.SetCell(row, 3, tview.NewTableCell(percentStr(e.Count, total)).SetAlign(tview.AlignRight))
+		t.SetCell(row, 4, tview.NewTableCell(avg).SetAlign(tview.AlignRight))
+		t.SetCell(row, 5, tview.NewTableCell(errRate).SetAlign(tview.AlignRight).SetTextColor(errColor))
+	}
+}
+
 func renderTimeline(tv *tview.TextView, buckets []stats.HistogramBucket) {
 	tv.Clear()
 	if len(buckets) == 0 {
