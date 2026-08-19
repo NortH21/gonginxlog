@@ -54,8 +54,10 @@ log_format main_json escape=json '{'
   whatever JSON key the user chose (e.g. `"x-request-id":"$request_id"`
   still resolves to variable `request_id`). This is what lets filters
   and stats work regardless of custom JSON key names.
-- **Time filter**: both absolute (`--since`/`--until`, RFC3339 or nginx
-  `time_local` layout) and relative (`--last 1h`).
+- **Time filter**: both absolute (`--since`/`--until`, RFC3339, nginx
+  `time_local` layout, or a bare `YYYY-MM-DD[ T]HH:MM:SS`/`YYYY-MM-DD`
+  shorthand parsed in the local zone — see below) and relative
+  (`--last 1h`).
 - **Status filter**: exact codes, classes (`5xx`), and ranges
   (`500-599`), comma-combinable.
 - **IP filter**: exact/list and CIDR subnets, comma-combinable.
@@ -66,7 +68,9 @@ log_format main_json escape=json '{'
 - **Aggregates additionally requested**: request/upstream timing
   percentiles (p50/p90/p99/avg/max), top User-Agent/Referer, and a
   requests-over-time histogram (ASCII bar chart, bucket size
-  configurable via `--bucket`).
+  configurable via `--bucket`; bucket labels print the source zone
+  offset, e.g. `2026-08-19 15:13 +0300`, since it comes straight from
+  the log's own `time_local` offset — see the timezone note below).
 - **Output**: text tables by default; `--json` for machine-readable
   export.
 - **Input sources**: multiple files as positional args, `.gz` rotated
@@ -123,6 +127,25 @@ suggestion.
   replaced a fixed 5m default after real usage showed a multi-hour log
   needed coarser buckets to stay readable. `--bucket <duration>` still
   forces a fixed size; `--bucket 0` still disables it.
+- **`--since`/`--until` timezone bug (fixed 2026-08-19)**: log timestamps
+  keep whatever offset nginx's `$time_local` wrote (e.g. `+0300`) as a
+  `time.FixedZone` on the parsed `time.Time` (`internal/record`). A
+  user filtering on a minute that was clearly non-empty in the
+  requests-over-time histogram got `Requests: 0` — twice, once with a
+  trailing `Z` and once with no zone suffix at all. Root cause: Go's
+  `time.Parse` defaults to **UTC** for any layout with no zone offset in
+  it, regardless of the process's local zone — a well-known gotcha, not
+  a comparison bug. `--since 2026-08-19T15:13:00` (no `Z`) was silently
+  parsed as UTC, not as 15:13 on the machine running gonginxlog, so it
+  compared against a different instant than what the histogram (which
+  also carries the log's own offset, unconverted) displayed. Fixed in
+  `internal/filter/time.go` by splitting `ParseTime`'s layout list into
+  `zonedTimeLayouts` (RFC3339, nginx `time_local` — parsed as written via
+  `time.Parse`) and `localTimeLayouts` (the bare shorthands — parsed via
+  `time.ParseInLocation(layout, s, time.Local)`), and by adding the
+  offset to the histogram's line format (`internal/output/text.go`) so a
+  mismatch is visible instead of silent. Regression test:
+  `internal/filter/time_test.go`.
 - `--version` prints version/commit/date/builtBy, sourced from
   `main.version` etc. via `-ldflags -X`. This mirrors goreleaser's
   *default* ldflags exactly (see below) so no custom `ldflags:` override

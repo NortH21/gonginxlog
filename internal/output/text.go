@@ -181,7 +181,7 @@ func writeHistogram(w io.Writer, buckets []stats.HistogramBucket) {
 		}
 	}
 	for _, b := range buckets {
-		fmt.Fprintf(w, "  %s  %6d  %s\n", b.Start.Format("2006-01-02 15:04"), b.Count, bar(b.Count, max, 40))
+		fmt.Fprintf(w, "  %s  %6d  %s\n", b.Start.Format("2006-01-02 15:04 -0700"), b.Count, bar(b.Count, max, 40))
 	}
 	fmt.Fprintln(w)
 }
